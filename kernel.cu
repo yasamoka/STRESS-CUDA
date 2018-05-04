@@ -1,6 +1,6 @@
 
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
+//#include "cuda_runtime.h"
+//#include "device_launch_parameters.h"
 
 #include <stdio.h>
 #include <assert.h>
@@ -9,6 +9,8 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/opencv.hpp>
+
+#include "GpuTimer.h"
 
 #define BLOCK_WIDTH 16
 
@@ -72,42 +74,59 @@ int main(int argc, char *argv[])
 // Helper function for using CUDA to add vectors in parallel.
 cudaError_t testWithCuda(uint8_t *inputImage, uint8_t *outputImage, unsigned int imageWidth, unsigned int imageHeight, unsigned int imageChannels)
 {
+	GpuTimer cudaMallocInputTimer;
+	GpuTimer cudaMallocOutputTimer;
+	GpuTimer cudaMemcpyInputTimer;
+	GpuTimer cudaKernelTimer;
+	GpuTimer cudaMemcpyOutputTimer;
 	unsigned int imageSize = imageWidth * imageHeight * imageChannels;
 	cudaError_t cudaStatus;
 
     // Choose which GPU to run on, change this on a multi-GPU system.
     cudaStatus = cudaSetDevice(0);
     if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+        fprintf(stderr, "cudaSetDevice failed! Do you have a CUDA-capable GPU installed?");
         goto Error;
     }
 
 	// Allocate GPU buffers for two vectors (one input, one output).
 	uint8_t *d_InputImage;
+	cudaMallocInputTimer.Start();
     cudaStatus = cudaMalloc((void**)&d_InputImage, imageSize * sizeof(uint8_t));
+	cudaMallocInputTimer.Stop();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc (input image) failed!");
         goto Error;
     }
+	printf("Time to allocate input:\t\t\t\t%f ms\n", cudaMallocInputTimer.Elapsed());
 
+	
 	uint8_t *d_OutputImage;
+	cudaMallocOutputTimer.Start();
     cudaStatus = cudaMalloc((void**)&d_OutputImage, imageSize * sizeof(uint8_t));
+	cudaMallocOutputTimer.Stop();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc (output image) failed!");
         goto Error;
     }
+	printf("Time to allocate output:\t\t\t%f ms\n", cudaMallocOutputTimer.Elapsed());
 
     // Copy input vectors from host memory to GPU buffers.
+	cudaMemcpyInputTimer.Start();
     cudaStatus = cudaMemcpy(d_InputImage, inputImage, imageSize * sizeof(uint8_t), cudaMemcpyHostToDevice);
+	cudaMemcpyInputTimer.Stop();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy (host -> device) failed!");
         goto Error;
     }
+	printf("Time to copy input from host to device:\t\t%f ms\n", cudaMemcpyInputTimer.Elapsed());
 
     // Launch a kernel on the GPU with one thread for each element.
 	dim3 dimBlock(BLOCK_WIDTH, BLOCK_WIDTH, 1);
 	dim3 dimGrid((imageWidth - 1) / BLOCK_WIDTH + 1, (imageHeight - 1) / BLOCK_WIDTH + 1, 1);
+	cudaKernelTimer.Start();
     testKernel<<<dimGrid, dimBlock>>>(d_InputImage, d_OutputImage, imageWidth, imageHeight, imageChannels);
+	cudaKernelTimer.Stop();
 
     // Check for any errors launching the kernel
     cudaStatus = cudaGetLastError();
@@ -123,14 +142,20 @@ cudaError_t testWithCuda(uint8_t *inputImage, uint8_t *outputImage, unsigned int
         fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
         goto Error;
     }
+	printf("Time to execute kernel:\t\t\t\t%f ms\n", cudaKernelTimer.Elapsed());
 
     // Copy output vector from GPU buffer to host memory.
-	//outputImage = (uint8_t*)malloc(imageSize * sizeof(uint8_t));
+	cudaMemcpyOutputTimer.Start();
     cudaStatus = cudaMemcpy(outputImage, d_OutputImage, imageSize * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+	cudaMemcpyOutputTimer.Stop();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy (device -> host) failed!");
         goto Error;
     }
+
+	{
+		printf("Time to copy output from device to host:\t%f ms\n", cudaMemcpyOutputTimer.Elapsed());
+	}
 
 Error:
 	cudaFree(d_InputImage);
