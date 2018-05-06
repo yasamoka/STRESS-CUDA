@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <ctime>
 #include <string>
 #include <iostream>
 #include <fstream>
@@ -38,7 +39,7 @@ __global__ void testKernel(uint8_t *inputImage, uint8_t *outputImage, unsigned i
 	}
 }
 
-void computeRandomSprays_CPU(short int ***spraysX, short int ***spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays) {
+void computeRandomSpraysCPU(short int ***spraysX, short int ***spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays) {
 	const unsigned int width = 2 * radius + 1;
 	const unsigned int area = width * width;								// compute area of neighborhood
 	bool *neighborhood = (bool*)malloc(area * sizeof(bool));				// allocate boolean neighborhood array of size area
@@ -58,7 +59,7 @@ void computeRandomSprays_CPU(short int ***spraysX, short int ***spraysY, const u
 	*spraysY = (short int**)malloc(numOfSprays * sizeof(short int*));	// sprays ordinates array
 	
 	// initialize neighborbood as empty
-	for (unsigned int neighborIdx; neighborIdx < area; neighborIdx++) {
+	for (unsigned int neighborIdx = 0; neighborIdx < area; neighborIdx++) {
 		neighborhood[neighborIdx] = false;
 	}
 
@@ -115,43 +116,434 @@ cv::Mat generateRandomSprayImage(short int *sprayX, short int *sprayY, const uns
 	return sprayImage;
 }
 
+// This version of the function uses pre-computed random sprays. It chooses, in each iteration, for each pixel, a random spray at random out of the available sprays.
+// This introduces an issue whereby pixels closer to the edge of the image in particular face reduced sampling due to many sample points lying outside the image and
+// thus not being factored into calculating the envelope. The issue manifests itself particularly when more iterations are used.
+void STRESSGrayscaleToGrayscaleCPU1(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, short int **spraysX, short int **spraysY, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations) {
+	unsigned int targetPixelIdx; // target pixel (p) absolute index
+	int samplePointX; // spray sample point abscissa
+	int samplePointY; // spray sample point ordinate
+	unsigned int samplePointPixelIdx; // spray sample point pixel index
+	uint8_t Emin;
+	uint8_t Emax;
+
+	unsigned int randomSprayIdx;  // random spray index
+	short int *randomSprayX;    // abscissas for spray chosen at random
+	short int *randomSprayY;    // ordinates for spray chosen at random
+
+								// allocate temporary output image array for storing sum of all iteration results
+	unsigned int imageSize = imageWidth * imageHeight;
+	float *tempOutputImage = (float*)malloc(imageSize * sizeof(float));
+
+	// initial temporary output image as empty
+	for (unsigned int pixelIdx = 0; pixelIdx < imageSize; pixelIdx++) {
+		tempOutputImage[pixelIdx] = 0.0f;
+	}
+
+	// iteration loop
+	for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+		targetPixelIdx = 0; // reset target pixel absolute index to 0
+		for (unsigned short int targetPixelY = 0; targetPixelY < imageHeight; targetPixelY++) {
+			for (unsigned short int targetPixelX = 0; targetPixelX < imageWidth; targetPixelX++) {
+				//set Emin and Emax equal to target pixel value
+				Emin = Emax = inputImage[targetPixelIdx];
+
+				// choose spray at random
+				randomSprayIdx = rand() % numOfSprays;
+				randomSprayX = spraysX[randomSprayIdx];
+				randomSprayY = spraysY[randomSprayIdx];
+
+				// calculate envelope
+				for (unsigned int sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
+					samplePointX = targetPixelX + randomSprayX[sampleIdx];  // get sample point abscissa in input image
+					samplePointY = targetPixelY + randomSprayY[sampleIdx];  // get sample point ordinate in input image
+																			//printf("%i %i\n", samplePointX, samplePointY);
+					if (samplePointX >= 0 && samplePointX < imageWidth && samplePointY >= 0 && samplePointY < imageHeight) {  // only proceed if sample point is within the input image
+						samplePointPixelIdx = imageWidth * samplePointY + samplePointX; // get sample point index in input image
+						if (inputImage[samplePointPixelIdx] < Emin) // if sample point color channel is less than Emin at that channel
+							Emin = inputImage[samplePointPixelIdx]; // it is the new Emin at that channel
+						else if (inputImage[samplePointPixelIdx] > Emax)
+							Emax = inputImage[samplePointPixelIdx];
+					}
+				}
+
+				// calculate (p - Emin) / (Emax - Emin)
+				tempOutputImage[targetPixelIdx] += (inputImage[targetPixelIdx] - Emin) * 255.0 / (Emax - Emin);
+
+				targetPixelIdx++;
+			}
+		}
+	}
+
+	// divide each accumulated pixel value by the number of iterations to obtain the average pixel value across iterations.
+	// place the average value in the output image array.
+	for (unsigned int pixelIdx = 0; pixelIdx < imageSize; pixelIdx++) {
+		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
+	}
+}
+
+// This version of the function does not use pre-computed random sprays. Instead, it generates, in each iteration, for each pixel in the image, a random spray for that pixel.
+// This solves the issue of reduced sampling seen in the first version of the function. However, this approach is much slower than using pre-computed sprays
+void STRESSGrayscaleToGrayscaleCPU2(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
+	unsigned int randomSamplePixelIdx;									// random sample pixel index
+	unsigned int randomSampleImagePixelIdx;								// random sample pixel absolute index in image
+	float randomRadius;													// random radius
+	float randomTheta;													// random theta
+	int randomSamplePixelX;												// random sample pixel abscissa
+	int randomSamplePixelY;												// random sample pixel ordinate
+	std::default_random_engine generator;								// random number generator engine
+	std::uniform_real_distribution<float> radiusDistribution(0, radius);	// uniform real distribution for radius in the range (0, radius)
+	std::uniform_real_distribution<float> thetaDistribution(0, 2 * M_PI);	// uniform real distribution for theta in the range (0, 2*pi)
+
+	unsigned int targetPixelIdx; // target pixel (p) absolute index
+	uint8_t Emin;
+	uint8_t Emax;
+
+	// allocate temporary output image array for storing sum of all iteration results
+	unsigned int imageSize = imageWidth * imageHeight;
+	float *tempOutputImage = (float*)malloc(imageSize * sizeof(float));
+
+	// initial temporary output image as empty
+	for (unsigned int pixelIdx = 0; pixelIdx < imageSize; pixelIdx++) {
+		tempOutputImage[pixelIdx] = 0.0f;
+	}
+
+	// iteration loop
+	for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+		targetPixelIdx = 0;	// reset target pixel absolute index to 0
+		for (unsigned short int targetPixelY = 0; targetPixelY < imageHeight; targetPixelY++) {
+			for (unsigned short int targetPixelX = 0; targetPixelX < imageWidth; targetPixelX++) {
+				//set Emin and Emax equal to target pixel value
+				Emin = Emax = inputImage[targetPixelIdx];
+
+				// calculate envelope
+				randomSamplePixelIdx = 0;
+				while (randomSamplePixelIdx < numOfSamplePoints) {		// random sample pixel point loop
+					randomRadius = radiusDistribution(generator);	// get a random distance from the uniform real distribution for distance
+					randomTheta = thetaDistribution(generator);		// get a random theta from the uniform real distribution for theta
+					randomSamplePixelX = targetPixelX + randomRadius * cos(randomTheta);	// compute random pixel abscissa
+					if (randomSamplePixelX >= 0 && randomSamplePixelX < imageWidth) {		// if random pixel abscissa is within image
+						randomSamplePixelY = targetPixelY + randomRadius * sin(randomTheta);		// compute random pixel ordinate
+						if (randomSamplePixelY >= 0 && randomSamplePixelY < imageHeight) {	// if random pixel ordinate is within image
+							randomSampleImagePixelIdx = imageWidth * randomSamplePixelY + randomSamplePixelX; // get random sample pixel index in image
+							if (inputImage[randomSampleImagePixelIdx] < Emin)		// if sample pixel value is less than Emin
+								Emin = inputImage[randomSampleImagePixelIdx];		// it is the new Emin
+							else if (inputImage[randomSampleImagePixelIdx] > Emax)	// if sample pixel value is greater than Emax 
+								Emax = inputImage[randomSampleImagePixelIdx];	// it is the new Emax
+							randomSamplePixelIdx++;	// advance random sample pixel index
+						}
+					}
+				}
+
+				// calculate (p - Emin) / (Emax - Emin)
+				tempOutputImage[targetPixelIdx] += (inputImage[targetPixelIdx] - Emin) * 255.0 / (Emax - Emin);
+
+				targetPixelIdx++; // advance target pixel index
+			}
+		}
+	}
+
+	// divide each accumulated pixel value by the number of iterations to obtain the average pixel value across iterations.
+	// place the average value in the output image array.
+	for (unsigned int pixelIdx = 0; pixelIdx < imageSize; pixelIdx++) {
+		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
+	}
+}
+
+// This version of the function is a hybrid between the first two approaches. It uses pre-computed sprays similarly to the first approach.
+// However, for any pixel, if any sample point in its chosen pre-computed spray is found to be lying outside the image, it is replaced with
+// a randomly chosen sample points lying within the image. This should solve the issue of the first approach while not being as slow as the second approach,
+// particularly for pixels not close to the edges of the image, since the likelihood of a sample point not lying within the image for those diminishes greatly.
+void STRESSGrayscaleToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, short int **spraysX, short int **spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations) {
+	float randomRadius;													// random radius
+	float randomTheta;													// random theta
+	int samplePixelX;													// (pre-computed / random) sample pixel abscissa
+	int samplePixelY;													// (pre-computed / random) sample pixel ordinate
+	unsigned int sampleIdx;												// sample index
+	unsigned int samplePixelIdx;										// sample pixel index
+	unsigned int numOfValidSamplePoints;								// number of valid sample points in envelope
+	std::default_random_engine generator;								// random number generator engine
+	std::uniform_real_distribution<float> radiusDistribution(0, radius);	// uniform real distribution for radius in the range (0, radius)
+	std::uniform_real_distribution<float> thetaDistribution(0, 2 * M_PI);	// uniform real distribution for theta in the range (0, 2*pi)
+	
+	unsigned int targetPixelIdx; // target pixel (p) absolute index
+	uint8_t Emin;
+	uint8_t Emax;
+
+	unsigned int randomSprayIdx;  // random spray index
+	short int *randomSprayX;    // abscissas for spray chosen at random
+	short int *randomSprayY;    // ordinates for spray chosen at random
+
+								// allocate temporary output image array for storing sum of all iteration results
+	unsigned int imageSize = imageWidth * imageHeight;
+	float *tempOutputImage = (float*)malloc(imageSize * sizeof(float));
+
+	// initial temporary output image as empty
+	for (unsigned int pixelIdx = 0; pixelIdx < imageSize; pixelIdx++) {
+		tempOutputImage[pixelIdx] = 0.0f;
+	}
+
+	// iteration loop
+	for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+		targetPixelIdx = 0; // reset target pixel absolute index to 0
+		for (unsigned short int targetPixelY = 0; targetPixelY < imageHeight; targetPixelY++) {
+			for (unsigned short int targetPixelX = 0; targetPixelX < imageWidth; targetPixelX++) {
+				//set Emin and Emax equal to target pixel value
+				Emin = Emax = inputImage[targetPixelIdx];
+
+				// choose spray at random
+				randomSprayIdx = rand() % numOfSprays;
+				randomSprayX = spraysX[randomSprayIdx];
+				randomSprayY = spraysY[randomSprayIdx];
+
+				// calculate envelope
+				sampleIdx = 0;	// reset sample index to 0
+				numOfValidSamplePoints = 0;	// reset number of valid sample points to 0
+				for (sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
+					samplePixelX = targetPixelX + randomSprayX[sampleIdx];  // get sample pixel abscissa in input image
+					samplePixelY = targetPixelY + randomSprayY[sampleIdx];  // get sample pixel ordinate in input image
+					if (samplePixelX >= 0 && samplePixelX < imageWidth && samplePixelY >= 0 && samplePixelY < imageHeight) {  // only proceed if sample pixel is within the input image
+						samplePixelIdx = imageWidth * samplePixelY + samplePixelX; // get sample pixel index in input image
+						if (inputImage[samplePixelIdx] < Emin) // if sample pixel value is less than Emin
+							Emin = inputImage[samplePixelIdx]; // it is the new Emin
+						else if (inputImage[samplePixelIdx] > Emax)	// if sample pixel value is greater than Emax
+							Emax = inputImage[samplePixelIdx];			// it is the new Emax
+						numOfValidSamplePoints++;	// increment number of valid sample points
+					}
+				}
+
+				// generate sample points to compensate for invalid sample points
+				sampleIdx = numOfValidSamplePoints;
+				while (sampleIdx < numOfSamplePoints) {
+					randomRadius = radiusDistribution(generator);	// get a random distance from the uniform real distribution for distance
+					randomTheta = thetaDistribution(generator);		// get a random theta from the uniform real distribution for theta
+					samplePixelX = targetPixelX + randomRadius * cos(randomTheta);	// compute random pixel abscissa
+					if (samplePixelX >= 0 && samplePixelX < imageWidth) {		// if random pixel abscissa is within image
+						samplePixelY = targetPixelY + randomRadius * sin(randomTheta);		// compute random pixel ordinate
+						if (samplePixelY >= 0 && samplePixelY < imageHeight) {	// if random pixel ordinate is within image
+							samplePixelIdx = imageWidth * samplePixelY + samplePixelX; // get random sample pixel index in image
+							if (inputImage[samplePixelIdx] < Emin)		// if sample pixel value is less than Emin
+								Emin = inputImage[samplePixelIdx];		// it is the new Emin
+							else if (inputImage[samplePixelIdx] > Emax)	// if sample pixel value is greater than Emax 
+								Emax = inputImage[samplePixelIdx];	// it is the new Emax
+							sampleIdx++;	// advance random sample pixel index
+						}
+					}
+				}
+
+				// calculate (p - Emin) / (Emax - Emin)
+				tempOutputImage[targetPixelIdx] += (inputImage[targetPixelIdx] - Emin) * 255.0 / (Emax - Emin);
+
+				targetPixelIdx++;
+			}
+		}
+	}
+
+	// divide each accumulated pixel value by the number of iterations to obtain the average pixel value across iterations.
+	// place the average value in the output image array.
+	for (unsigned int pixelIdx = 0; pixelIdx < imageSize; pixelIdx++) {
+		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
+	}
+}
+
+void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, short int **spraysX, short int **spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations) {
+	float randomRadius;													// random radius
+	float randomTheta;													// random theta
+	int samplePixelX;													// (pre-computed / random) sample pixel abscissa
+	int samplePixelY;													// (pre-computed / random) sample pixel ordinate
+	unsigned int sampleIdx;												// sample index
+	uint8_t channelIdx;													// channel index
+	unsigned int samplePixelIdx;										// sample pixel index
+	unsigned int samplePixelChannelIdx;									// sample pixel channel index
+	unsigned int numOfValidSamplePoints;								// number of valid sample points in envelope
+	std::default_random_engine generator;								// random number generator engine
+	std::uniform_real_distribution<float> radiusDistribution(0, radius);	// uniform real distribution for radius in the range (0, radius)
+	std::uniform_real_distribution<float> thetaDistribution(0, 2 * M_PI);	// uniform real distribution for theta in the range (0, 2*pi)
+
+	unsigned int targetInputPixelIdx; // target input pixel (p) index
+	unsigned int targetOutputPixelIdx; // target output pixel index
+	uint8_t *Emin = (uint8_t*)malloc(imageChannels * sizeof(uint8_t));	// Emin array of size imageChannels
+	uint8_t *Emax = (uint8_t*)malloc(imageChannels * sizeof(uint8_t));	// Emax array of size imageChannels
+	
+	// for calculating (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+	uint8_t Edelta;
+	unsigned short int dotProd, ElenSq;
+
+	unsigned int randomSprayIdx;  // random spray index
+	short int *randomSprayX;    // abscissas for spray chosen at random
+	short int *randomSprayY;    // ordinates for spray chosen at random
+
+	// allocate temporary output image array for storing sum of all iteration results
+	unsigned int outputImageSize = imageWidth * imageHeight;
+	float *tempOutputImage = (float*)malloc(outputImageSize * sizeof(float));
+
+	// initial temporary output image as empty
+	for (unsigned int pixelIdx = 0; pixelIdx < outputImageSize; pixelIdx++) {
+		tempOutputImage[pixelIdx] = 0.0f;
+	}
+
+	// iteration loop
+	for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+		targetInputPixelIdx = 0; // reset target input pixel index to 0
+		targetOutputPixelIdx = 0; // reset target output pixel index to 0
+		for (unsigned short int targetPixelY = 0; targetPixelY < imageHeight; targetPixelY++) {
+			for (unsigned short int targetPixelX = 0; targetPixelX < imageWidth; targetPixelX++) {
+				//set Emin and Emax equal to target pixel across all color channels
+				for (channelIdx = 0; channelIdx < imageChannels; channelIdx++)
+					Emin[channelIdx] = Emax[channelIdx] = inputImage[targetInputPixelIdx + channelIdx];
+
+				// choose spray at random
+				randomSprayIdx = rand() % numOfSprays;
+				randomSprayX = spraysX[randomSprayIdx];
+				randomSprayY = spraysY[randomSprayIdx];
+
+				// calculate envelope
+				sampleIdx = 0;	// reset sample index to 0
+				numOfValidSamplePoints = 0;	// reset number of valid sample points to 0
+				for (sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
+					samplePixelX = targetPixelX + randomSprayX[sampleIdx];  // get sample pixel abscissa in input image
+					samplePixelY = targetPixelY + randomSprayY[sampleIdx];  // get sample pixel ordinate in input image
+					if (samplePixelX >= 0 && samplePixelX < imageWidth && samplePixelY >= 0 && samplePixelY < imageHeight) {  // only proceed if sample pixel is within the input image
+						samplePixelIdx = (imageWidth * samplePixelY + samplePixelX) * imageChannels; // get sample pixel index in input image
+						for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+							samplePixelChannelIdx = samplePixelIdx + channelIdx;
+							if (inputImage[samplePixelChannelIdx] < Emin[samplePixelChannelIdx]) // if sample pixel value is less than Emin
+								Emin[channelIdx] = inputImage[samplePixelChannelIdx];		// it is the new Emin
+							else if (inputImage[samplePixelChannelIdx] > Emax[channelIdx])	// if sample pixel value is greater than Emax
+								Emax[channelIdx] = inputImage[samplePixelChannelIdx];		// it is the new Emax
+						}
+						numOfValidSamplePoints++;	// increment number of valid sample points
+					}
+				}
+
+				// generate sample points to compensate for invalid sample points
+				sampleIdx = numOfValidSamplePoints;
+				while (sampleIdx < numOfSamplePoints) {
+					randomRadius = radiusDistribution(generator);	// get a random distance from the uniform real distribution for distance
+					randomTheta = thetaDistribution(generator);		// get a random theta from the uniform real distribution for theta
+					samplePixelX = targetPixelX + randomRadius * cos(randomTheta);	// compute random pixel abscissa
+					if (samplePixelX >= 0 && samplePixelX < imageWidth) {		// if random pixel abscissa is within image
+						samplePixelY = targetPixelY + randomRadius * sin(randomTheta);		// compute random pixel ordinate
+						if (samplePixelY >= 0 && samplePixelY < imageHeight) {	// if random pixel ordinate is within image
+							samplePixelIdx = imageWidth * samplePixelY + samplePixelX; // get random sample pixel index in image
+							for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+								samplePixelChannelIdx = samplePixelIdx + channelIdx;
+								if (inputImage[samplePixelChannelIdx] < Emin[channelIdx])		// if sample pixel value is less than Emin
+									Emin[channelIdx] = inputImage[samplePixelChannelIdx];		// it is the new Emin
+								else if (inputImage[samplePixelChannelIdx] > Emax[channelIdx])	// if sample pixel value is greater than Emax 
+									Emax[channelIdx] = inputImage[samplePixelChannelIdx];		// it is the new Emax
+							}
+							sampleIdx++;	// advance random sample pixel index
+						}
+					}
+				}
+
+				// calculate (p - Emin).(Emax - Emin), |Emax - Emin|^2
+				dotProd = 0;
+				ElenSq = 0;
+				for (uint8_t channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+					Edelta = Emax[channelIdx] - Emin[channelIdx];
+					dotProd += Edelta * (inputImage[targetInputPixelIdx + channelIdx] - Emin[channelIdx]);
+					ElenSq += Edelta * Edelta;
+				}
+
+				// calculate g = (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+				tempOutputImage[targetOutputPixelIdx] += dotProd * 255.0 / ElenSq;
+
+				targetInputPixelIdx += imageChannels;
+				targetOutputPixelIdx++;
+			}
+		}
+	}
+
+	// divide each accumulated pixel value by the number of iterations to obtain the average pixel value across iterations.
+	// place the average value in the output image array.
+	for (unsigned int pixelIdx = 0; pixelIdx < outputImageSize; pixelIdx++) {
+		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
+	}
+}
+
 int main(int argc, char *argv[])
 {
+	if (argc != 7) {
+		fprintf(stderr, "Invalid arguments.");
+		return 1;
+	}
+
 	srand(time(NULL));
-	const unsigned short int radius = 200;
-	const unsigned int numOfSamplePoints = 200;
-	const unsigned int numOfSprays = 100;
+	const unsigned short int radius = atoi(argv[3]);
+	const unsigned int numOfSamplePoints = atoi(argv[4]);
+	const unsigned int numOfIterations = atoi(argv[5]);
+	const unsigned int numOfSprays = atoi(argv[6]);
 	short int **spraysX;
 	short int **spraysY;
-	GpuTimer computeRandomSpraysCPUTimer;
-	computeRandomSpraysCPUTimer.Start();
-	computeRandomSprays_CPU(&spraysX, &spraysY, radius, numOfSamplePoints, numOfSprays);
-	computeRandomSpraysCPUTimer.Stop();
+	clock_t computeRandomSpraysCPUClock = clock();
+	computeRandomSpraysCPU(&spraysX, &spraysY, radius, numOfSamplePoints, numOfSprays);
+	double computeRandomSpraysCPUDuration = (clock() - computeRandomSpraysCPUClock) / (double)CLOCKS_PER_SEC;
 
-	printf("Time to compute random sprays (CPU): %f ms\n", computeRandomSpraysCPUTimer.Elapsed());
+	printf("Time to compute random sprays (CPU): %fs\n", computeRandomSpraysCPUDuration);
 
-	printf("Writing random sprays (%i) to disk ...\n", numOfSprays);
+	/*printf("Writing random sprays (%i) to disk ...\n", numOfSprays);
 	char sprayImageName[20];
 	for (unsigned int sprayIdx = 0; sprayIdx < numOfSprays; sprayIdx++) {
 		cv::Mat sprayImage = generateRandomSprayImage(spraysX[sprayIdx], spraysY[sprayIdx], radius, numOfSamplePoints);
 		sprintf(sprayImageName, "spray%i.png", sprayIdx);
 		cv::imwrite(sprayImageName, sprayImage);
-	}
+	}*/
 
-	if (argc != 2) {
-		fprintf(stderr, "Invalid arguments.");
+	char imageName[50];
+
+	char *grayscaleImageName = argv[1];
+	cv::Mat grayscaleInputImage = cv::imread(grayscaleImageName, CV_LOAD_IMAGE_GRAYSCALE);
+	if (grayscaleInputImage.empty()) {
+		fprintf(stderr, "Cannot read grayscale image file %s.", grayscaleImageName);
 		return 1;
 	}
-	char *imageName = argv[1];
-	cv::Mat inputImage = cv::imread(imageName, CV_LOAD_IMAGE_COLOR);
-	if (inputImage.empty()) {
-		fprintf(stderr, "Cannot read image file %s.", imageName);
-		return 1;
-	}
-	unsigned int imageSize = inputImage.cols * inputImage.rows * inputImage.channels();
-	uint8_t *outputImageData = (uint8_t*)malloc(imageSize * sizeof(uint8_t));
+	uint8_t *grayscaleOutputImageData = (uint8_t*)malloc(grayscaleInputImage.cols * grayscaleInputImage.rows * sizeof(uint8_t));
 
-    cudaError_t cudaStatus = testWithCuda(inputImage.data, outputImageData, inputImage.cols, inputImage.rows, inputImage.channels());
+	printf("Running STRESSGrayscaleToGrayscaleCPU1 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	clock_t STRESSG2GCPU1Clock = clock();
+	STRESSGrayscaleToGrayscaleCPU1(grayscaleOutputImageData, grayscaleInputImage.data, grayscaleInputImage.cols, grayscaleInputImage.rows, spraysX, spraysY, numOfSamplePoints, numOfSprays, numOfIterations);
+	double STRESSG2GCPU1Duration = (clock() - STRESSG2GCPU1Clock) / (double) CLOCKS_PER_SEC;
+	printf("Finished STRESSGrayscaleToGrayscaleCPU1 in %fs, dumping to disk ...\n", STRESSG2GCPU1Duration);
+	cv::Mat grayscaleOutputImageCPU1(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
+	sprintf(imageName, "outGCPU1_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, grayscaleOutputImageCPU1);
+
+	printf("Running STRESSGrayscaleToGrayscaleCPU2 (R=%i, M=%i, N=%i) ...\n", radius, numOfSamplePoints, numOfIterations);
+	clock_t STRESSG2GCPU2Clock = clock();
+	STRESSGrayscaleToGrayscaleCPU2(grayscaleOutputImageData, grayscaleInputImage.data, grayscaleInputImage.cols, grayscaleInputImage.rows, radius, numOfSamplePoints, numOfIterations);
+	double STRESSG2GCPU2Duration = (clock() - STRESSG2GCPU2Clock) / (double)CLOCKS_PER_SEC;
+	printf("Finished STRESSGrayscaleToGrayscaleCPU2 in %fs, dumping to disk ...\n", STRESSG2GCPU2Duration);
+	cv::Mat grayscaleOutputImageCPU2(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
+	sprintf(imageName, "outGCPU2_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, grayscaleOutputImageCPU2);
+
+	printf("Running STRESSGrayscaleToGrayscaleCPU3 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	clock_t STRESSG2GCPU3Clock = clock();
+	STRESSGrayscaleToGrayscaleCPU3(grayscaleOutputImageData, grayscaleInputImage.data, grayscaleInputImage.cols, grayscaleInputImage.rows, spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
+	double STRESSG2GCPU3Duration = (clock() - STRESSG2GCPU3Clock) / (double)CLOCKS_PER_SEC;
+	printf("Finished STRESSGrayscaleToGrayscaleCPU3 in %fs, dumping to disk ...\n", STRESSG2GCPU3Duration);
+	cv::Mat grayscaleOutputImageCPU3(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
+	sprintf(imageName, "outGCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, grayscaleOutputImageCPU3);
+	
+	char *colorimageName = argv[2];
+	cv::Mat colorInputImage = cv::imread(colorimageName, CV_LOAD_IMAGE_COLOR);
+
+	printf("Running STRESSColorToGrayscaleCPU3 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	clock_t STRESSC2GCPU3Clock = clock();
+	STRESSColorToGrayscaleCPU3(grayscaleOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
+	double STRESSC2GCPU3Duration = (clock() - STRESSC2GCPU3Clock) / (double)CLOCKS_PER_SEC;
+	printf("Finished STRESSColorToGrayscaleCPU3 in %fs, dumping to disk ...\n", STRESSC2GCPU3Duration);
+	cv::Mat colorOutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC1, grayscaleOutputImageData);
+	sprintf(imageName, "outCCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, colorOutputImageCPU3);
+	
+	system("PAUSE");
+	return 0;
+
+    /*cudaError_t cudaStatus = testWithCuda(inputImage.data, outputImageData, inputImage.cols, inputImage.rows, inputImage.channels());
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "testWithCuda failed!");
         return 1;
@@ -169,7 +561,7 @@ int main(int argc, char *argv[])
 	printf("%s\n", "Writing output image to disk ...");
 	cv::imwrite("output.png", outputImage);
 
-    return 0;
+    return 0;*/
 }
 
 // Helper function for using CUDA to add vectors in parallel.
