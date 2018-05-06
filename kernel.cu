@@ -367,7 +367,7 @@ void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const
 	
 	// for calculating (p - Emin).(Emax - Emin) / |Emax - Emin|^2
 	uint8_t Edelta;
-	unsigned short int dotProd, ElenSq;
+	unsigned int dotProd, ElenSq;
 
 	unsigned int randomSprayIdx;  // random spray index
 	short int *randomSprayX;    // abscissas for spray chosen at random
@@ -441,14 +441,21 @@ void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const
 				// calculate (p - Emin).(Emax - Emin), |Emax - Emin|^2
 				dotProd = 0;
 				ElenSq = 0;
-				for (uint8_t channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
 					Edelta = Emax[channelIdx] - Emin[channelIdx];
 					dotProd += Edelta * (inputImage[targetInputPixelIdx + channelIdx] - Emin[channelIdx]);
 					ElenSq += Edelta * Edelta;
 				}
 
 				// calculate g = (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+				//printf("%f %f\n", dotProd, ElenSq);
 				tempOutputImage[targetOutputPixelIdx] += dotProd * 255.0 / ElenSq;
+
+				/*for (channelIdx = 0; channelIdx < imageChannels; channelIdx++)
+					dotProd += (Emax[channelIdx] - Emin[channelIdx]) * (inputImage[targetInputPixelIdx + channelIdx] - Emin[channelIdx]);
+				ElenSq = 0;
+				for (channelIdx = 0; channelIdx < imageChannels; channelIdx++)
+					ElenSq += (Emax[channelIdx] - Emin[channelIdx]) * (Emax[channelIdx] - Emin[channelIdx])*/
 
 				targetInputPixelIdx += imageChannels;
 				targetOutputPixelIdx++;
