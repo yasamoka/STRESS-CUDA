@@ -407,7 +407,7 @@ void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const
 						samplePixelIdx = (imageWidth * samplePixelY + samplePixelX) * imageChannels; // get sample pixel index in input image
 						for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
 							samplePixelChannelIdx = samplePixelIdx + channelIdx;
-							if (inputImage[samplePixelChannelIdx] < Emin[samplePixelChannelIdx]) // if sample pixel value is less than Emin
+							if (inputImage[samplePixelChannelIdx] < Emin[channelIdx]) // if sample pixel value is less than Emin
 								Emin[channelIdx] = inputImage[samplePixelChannelIdx];		// it is the new Emin
 							else if (inputImage[samplePixelChannelIdx] > Emax[channelIdx])	// if sample pixel value is greater than Emax
 								Emax[channelIdx] = inputImage[samplePixelChannelIdx];		// it is the new Emax
@@ -463,10 +463,114 @@ void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const
 	}
 }
 
+void STRESSColorToColorCPU3(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, short int **spraysX, short int **spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations) {
+	float randomRadius;													// random radius
+	float randomTheta;													// random theta
+	int samplePixelX;													// (pre-computed / random) sample pixel abscissa
+	int samplePixelY;													// (pre-computed / random) sample pixel ordinate
+	unsigned int sampleIdx;												// sample index
+	uint8_t channelIdx;													// channel index
+	unsigned int samplePixelIdx;										// sample pixel index
+	unsigned int pixelChannelIdx;										// pixel channel index
+	unsigned int numOfValidSamplePoints;								// number of valid sample points in envelope
+	std::default_random_engine generator;								// random number generator engine
+	std::uniform_real_distribution<float> radiusDistribution(0, radius);	// uniform real distribution for radius in the range (0, radius)
+	std::uniform_real_distribution<float> thetaDistribution(0, 2 * M_PI);	// uniform real distribution for theta in the range (0, 2*pi)
+
+	unsigned int targetPixelIdx; // target pixel (p) index
+	uint8_t *Emin = (uint8_t*)malloc(imageChannels * sizeof(uint8_t));	// Emin array of size imageChannels
+	uint8_t *Emax = (uint8_t*)malloc(imageChannels * sizeof(uint8_t));	// Emax array of size imageChannels
+
+	unsigned int randomSprayIdx;  // random spray index
+	short int *randomSprayX;    // abscissas for spray chosen at random
+	short int *randomSprayY;    // ordinates for spray chosen at random
+
+	// allocate temporary output image array for storing sum of all iteration results
+	unsigned int imageSize = imageWidth * imageHeight * imageChannels;
+	float *tempOutputImage = (float*)malloc(imageSize * sizeof(float));
+
+	// initial temporary output image as empty
+	for (unsigned int pixelIdx = 0; pixelIdx < imageSize; pixelIdx++) {
+		tempOutputImage[pixelIdx] = 0.0f;
+	}
+
+	// iteration loop
+	for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+		targetPixelIdx = 0; // reset target pixel index to 0
+		for (unsigned short int targetPixelY = 0; targetPixelY < imageHeight; targetPixelY++) {
+			for (unsigned short int targetPixelX = 0; targetPixelX < imageWidth; targetPixelX++) {
+				//set Emin and Emax equal to target pixel across all color channels
+				for (channelIdx = 0; channelIdx < imageChannels; channelIdx++)
+					Emin[channelIdx] = Emax[channelIdx] = inputImage[targetPixelIdx + channelIdx];
+
+				// choose spray at random
+				randomSprayIdx = rand() % numOfSprays;
+				randomSprayX = spraysX[randomSprayIdx];
+				randomSprayY = spraysY[randomSprayIdx];
+
+				// calculate envelope
+				sampleIdx = 0;	// reset sample index to 0
+				numOfValidSamplePoints = 0;	// reset number of valid sample points to 0
+				for (sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
+					samplePixelX = targetPixelX + randomSprayX[sampleIdx];  // get sample pixel abscissa in input image
+					samplePixelY = targetPixelY + randomSprayY[sampleIdx];  // get sample pixel ordinate in input image
+					if (samplePixelX >= 0 && samplePixelX < imageWidth && samplePixelY >= 0 && samplePixelY < imageHeight) {  // only proceed if sample pixel is within the input image
+						samplePixelIdx = (imageWidth * samplePixelY + samplePixelX) * imageChannels; // get sample pixel index in input image
+						for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+							pixelChannelIdx = samplePixelIdx + channelIdx;
+							if (inputImage[pixelChannelIdx] < Emin[channelIdx]) // if sample pixel value is less than Emin
+								Emin[channelIdx] = inputImage[pixelChannelIdx];		// it is the new Emin
+							else if (inputImage[pixelChannelIdx] > Emax[channelIdx])	// if sample pixel value is greater than Emax
+								Emax[channelIdx] = inputImage[pixelChannelIdx];		// it is the new Emax
+						}
+						numOfValidSamplePoints++;	// increment number of valid sample points
+					}
+				}
+
+				// generate sample points to compensate for invalid sample points
+				sampleIdx = numOfValidSamplePoints;
+				while (sampleIdx < numOfSamplePoints) {
+					randomRadius = radiusDistribution(generator);	// get a random distance from the uniform real distribution for distance
+					randomTheta = thetaDistribution(generator);		// get a random theta from the uniform real distribution for theta
+					samplePixelX = targetPixelX + randomRadius * cos(randomTheta);	// compute random pixel abscissa
+					if (samplePixelX >= 0 && samplePixelX < imageWidth) {		// if random pixel abscissa is within image
+						samplePixelY = targetPixelY + randomRadius * sin(randomTheta);		// compute random pixel ordinate
+						if (samplePixelY >= 0 && samplePixelY < imageHeight) {	// if random pixel ordinate is within image
+							samplePixelIdx = imageWidth * samplePixelY + samplePixelX; // get random sample pixel index in image
+							for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+								pixelChannelIdx = samplePixelIdx + channelIdx;
+								if (inputImage[pixelChannelIdx] < Emin[channelIdx])		// if sample pixel value is less than Emin
+									Emin[channelIdx] = inputImage[pixelChannelIdx];		// it is the new Emin
+								else if (inputImage[pixelChannelIdx] > Emax[channelIdx])	// if sample pixel value is greater than Emax 
+									Emax[channelIdx] = inputImage[pixelChannelIdx];		// it is the new Emax
+							}
+							sampleIdx++;	// advance random sample pixel index
+						}
+					}
+				}
+
+				// calculate (p - Emin) / (Emax - Emin) for each color channel
+				for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+					pixelChannelIdx = targetPixelIdx + channelIdx;
+					tempOutputImage[pixelChannelIdx] += (inputImage[pixelChannelIdx] - Emin[channelIdx]) * 255.0 / (Emax[channelIdx] - Emin[channelIdx]);
+				}
+
+				targetPixelIdx += imageChannels;
+			}
+		}
+	}
+
+	// divide each accumulated pixel value by the number of iterations to obtain the average pixel value across iterations.
+	// place the average value in the output image array.
+	for (unsigned int pixelIdx = 0; pixelIdx < imageSize; pixelIdx++) {
+		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	if (argc != 7) {
-		fprintf(stderr, "Invalid arguments.");
+		fprintf(stderr, "Invalid number of arguments.");
 		return 1;
 	}
 
@@ -506,27 +610,27 @@ int main(int argc, char *argv[])
 	STRESSGrayscaleToGrayscaleCPU1(grayscaleOutputImageData, grayscaleInputImage.data, grayscaleInputImage.cols, grayscaleInputImage.rows, spraysX, spraysY, numOfSamplePoints, numOfSprays, numOfIterations);
 	double STRESSG2GCPU1Duration = (clock() - STRESSG2GCPU1Clock) / (double) CLOCKS_PER_SEC;
 	printf("Finished STRESSGrayscaleToGrayscaleCPU1 in %fs, dumping to disk ...\n", STRESSG2GCPU1Duration);
-	cv::Mat grayscaleOutputImageCPU1(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
-	sprintf(imageName, "outGCPU1_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, grayscaleOutputImageCPU1);
+	cv::Mat G2GOutputImageCPU1(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
+	sprintf(imageName, "outG2GCPU1_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, G2GOutputImageCPU1);
 
 	printf("Running STRESSGrayscaleToGrayscaleCPU2 (R=%i, M=%i, N=%i) ...\n", radius, numOfSamplePoints, numOfIterations);
 	clock_t STRESSG2GCPU2Clock = clock();
 	STRESSGrayscaleToGrayscaleCPU2(grayscaleOutputImageData, grayscaleInputImage.data, grayscaleInputImage.cols, grayscaleInputImage.rows, radius, numOfSamplePoints, numOfIterations);
 	double STRESSG2GCPU2Duration = (clock() - STRESSG2GCPU2Clock) / (double)CLOCKS_PER_SEC;
 	printf("Finished STRESSGrayscaleToGrayscaleCPU2 in %fs, dumping to disk ...\n", STRESSG2GCPU2Duration);
-	cv::Mat grayscaleOutputImageCPU2(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
-	sprintf(imageName, "outGCPU2_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, grayscaleOutputImageCPU2);
+	cv::Mat G2GOutputImageCPU2(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
+	sprintf(imageName, "outG2GCPU2_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, G2GOutputImageCPU2);
 
 	printf("Running STRESSGrayscaleToGrayscaleCPU3 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
 	clock_t STRESSG2GCPU3Clock = clock();
 	STRESSGrayscaleToGrayscaleCPU3(grayscaleOutputImageData, grayscaleInputImage.data, grayscaleInputImage.cols, grayscaleInputImage.rows, spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
 	double STRESSG2GCPU3Duration = (clock() - STRESSG2GCPU3Clock) / (double)CLOCKS_PER_SEC;
 	printf("Finished STRESSGrayscaleToGrayscaleCPU3 in %fs, dumping to disk ...\n", STRESSG2GCPU3Duration);
-	cv::Mat grayscaleOutputImageCPU3(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
-	sprintf(imageName, "outGCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, grayscaleOutputImageCPU3);
+	cv::Mat G2GOutputImageCPU3(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
+	sprintf(imageName, "outG2GCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, G2GOutputImageCPU3);
 	
 	char *colorimageName = argv[2];
 	cv::Mat colorInputImage = cv::imread(colorimageName, CV_LOAD_IMAGE_COLOR);
@@ -536,9 +640,21 @@ int main(int argc, char *argv[])
 	STRESSColorToGrayscaleCPU3(grayscaleOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
 	double STRESSC2GCPU3Duration = (clock() - STRESSC2GCPU3Clock) / (double)CLOCKS_PER_SEC;
 	printf("Finished STRESSColorToGrayscaleCPU3 in %fs, dumping to disk ...\n", STRESSC2GCPU3Duration);
-	cv::Mat colorOutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC1, grayscaleOutputImageData);
-	sprintf(imageName, "outCCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, colorOutputImageCPU3);
+	cv::Mat C2GOutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC1, grayscaleOutputImageData);
+	sprintf(imageName, "outC2GCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, C2GOutputImageCPU3);
+
+	unsigned int colorImageSize = colorInputImage.cols * colorInputImage.rows * colorInputImage.channels();
+	uint8_t *colorOutputImageData = (uint8_t*)malloc(colorImageSize * sizeof(uint8_t));
+
+	printf("Running STRESSColorToColorCPU3 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	clock_t STRESSC2CCPU3Clock = clock();
+	STRESSColorToColorCPU3(colorOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
+	double STRESSC2CCPU3Duration = (clock() - STRESSC2CCPU3Clock) / (double)CLOCKS_PER_SEC;
+	printf("Finished STRESSColorToColorCPU3 in %fs, dumping to disk ...\n", STRESSC2CCPU3Duration);
+	cv::Mat C2COutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC3, colorOutputImageData);
+	sprintf(imageName, "outC2CCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, C2COutputImageCPU3);
 	
 	system("PAUSE");
 	return 0;
