@@ -1,6 +1,6 @@
 
-//#include "cuda_runtime.h"
-//#include "device_launch_parameters.h"
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
 
 #include <stdio.h>
 #include <assert.h>
@@ -17,14 +17,16 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/opencv.hpp>
+//#include <curand.h>
+#include <curand_kernel.h>
 
 #include "GpuTimer.h"
 
 #define BLOCK_WIDTH 16
 
-cudaError_t testWithCuda(uint8_t *inputImage, uint8_t *outputImage, unsigned int imageWidth, unsigned int imageHeight, unsigned int imageChannels);
+cudaError_t testWithCuda(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, short int **spraysX, short int **spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed);
 
-__global__ void testKernel(uint8_t *inputImage, uint8_t *outputImage, unsigned int imageWidth, unsigned int imageHeight, unsigned int imageChannels)
+/*__global__ void testKernel(uint8_t *inputImage, uint8_t *outputImage, unsigned int imageWidth, unsigned int imageHeight, unsigned int imageChannels)
 {
 	unsigned int x = blockDim.x * blockIdx.x + threadIdx.x;
 	unsigned int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -37,7 +39,7 @@ __global__ void testKernel(uint8_t *inputImage, uint8_t *outputImage, unsigned i
 			outputImage[subpixelIdx] = inputImage[subpixelIdx];
 		}
 	}
-}
+}*/
 
 void computeRandomSpraysCPU(short int ***spraysX, short int ***spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays) {
 	const unsigned int width = 2 * radius + 1;
@@ -131,7 +133,7 @@ void STRESSGrayscaleToGrayscaleCPU1(uint8_t *outputImage, uint8_t *inputImage, c
 	short int *randomSprayX;    // abscissas for spray chosen at random
 	short int *randomSprayY;    // ordinates for spray chosen at random
 
-								// allocate temporary output image array for storing sum of all iteration results
+	// allocate temporary output image array for storing sum of all iteration results
 	unsigned int imageSize = imageWidth * imageHeight;
 	float *tempOutputImage = (float*)malloc(imageSize * sizeof(float));
 
@@ -216,7 +218,7 @@ void STRESSGrayscaleToGrayscaleCPU2(uint8_t *outputImage, uint8_t *inputImage, c
 				//set Emin and Emax equal to target pixel value
 				Emin = Emax = inputImage[targetPixelIdx];
 
-				// calculate envelope
+				// generate random sample points and calculate envelope
 				randomSamplePixelIdx = 0;
 				while (randomSamplePixelIdx < numOfSamplePoints) {		// random sample pixel point loop
 					randomRadius = radiusDistribution(generator);	// get a random distance from the uniform real distribution for distance
@@ -425,7 +427,7 @@ void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const
 					if (samplePixelX >= 0 && samplePixelX < imageWidth) {		// if random pixel abscissa is within image
 						samplePixelY = targetPixelY + randomRadius * sin(randomTheta);		// compute random pixel ordinate
 						if (samplePixelY >= 0 && samplePixelY < imageHeight) {	// if random pixel ordinate is within image
-							samplePixelIdx = imageWidth * samplePixelY + samplePixelX; // get random sample pixel index in image
+							samplePixelIdx = (imageWidth * samplePixelY + samplePixelX) * imageChannels; // get random sample pixel index in image
 							for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
 								samplePixelChannelIdx = samplePixelIdx + channelIdx;
 								if (inputImage[samplePixelChannelIdx] < Emin[channelIdx])		// if sample pixel value is less than Emin
@@ -448,14 +450,7 @@ void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const
 				}
 
 				// calculate g = (p - Emin).(Emax - Emin) / |Emax - Emin|^2
-				//printf("%f %f\n", dotProd, ElenSq);
 				tempOutputImage[targetOutputPixelIdx] += dotProd * 255.0 / ElenSq;
-
-				/*for (channelIdx = 0; channelIdx < imageChannels; channelIdx++)
-					dotProd += (Emax[channelIdx] - Emin[channelIdx]) * (inputImage[targetInputPixelIdx + channelIdx] - Emin[channelIdx]);
-				ElenSq = 0;
-				for (channelIdx = 0; channelIdx < imageChannels; channelIdx++)
-					ElenSq += (Emax[channelIdx] - Emin[channelIdx]) * (Emax[channelIdx] - Emin[channelIdx])*/
 
 				targetInputPixelIdx += imageChannels;
 				targetOutputPixelIdx++;
@@ -465,8 +460,8 @@ void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const
 
 	// divide each accumulated pixel value by the number of iterations to obtain the average pixel value across iterations.
 	// place the average value in the output image array.
-	for (unsigned int pixelIdx = 0; pixelIdx < outputImageSize; pixelIdx++) {
-		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
+	for (unsigned int pixelIdx1 = 0; pixelIdx1 < outputImageSize; pixelIdx1++) {
+		outputImage[pixelIdx1] = tempOutputImage[pixelIdx1] / numOfIterations;
 	}
 }
 
@@ -574,6 +569,108 @@ void STRESSColorToColorCPU3(uint8_t *outputImage, uint8_t *inputImage, const uns
 	}
 }
 
+
+// thanks to http://aresio.blogspot.com/2011/05/cuda-random-numbers-inside-kernels.html
+// and to https://hpc.oit.uci.edu/nvidia-doc/sdk-cuda-doc/CUDALibraries/doc/CURAND_Library.pdf
+__global__ void setupRandomKernel(curandState *state, const unsigned long long seed, const unsigned short int imageWidth, const unsigned short int imageHeight) {
+	unsigned int row = blockDim.y * blockIdx.y + threadIdx.y;
+	unsigned int col = blockDim.x * blockIdx.x + threadIdx.x;
+	if (row < imageHeight && col < imageWidth) {
+		unsigned int idx = imageWidth * row + col; // absolute thread index
+		//curand_init(seed, idx, 0, &state[idx]);	// initialize random number generator state in global memory
+		//curand_init((unsigned long long)clock(), 0, 0, &state[idx]);	// initialize random number generator state in global memory
+		//curand_init(seed, 0, 0, &state[idx]);	// initialize random number generator state in global memory
+		//curand_init(seed, idx % 2048, 0, &state[idx]);	// initialize random number generator state in global memory
+		curand_init(seed + idx, 0, 0, &state[idx]);	// initialize random number generator state in global memory
+	}
+}
+
+__global__ void STRESSColorToGrayscaleKernel2(curandState *state, uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
+	unsigned int targetPixelX = blockDim.x * blockIdx.x + threadIdx.x; // get pixel abscissa
+	unsigned int targetPixelY = blockDim.y * blockIdx.y + threadIdx.y; // target pixel ordinate
+
+	if (targetPixelX < imageWidth && targetPixelY < imageHeight) {
+		unsigned int idx = imageWidth * targetPixelY + targetPixelX;	// thread absolute index (output pixel absolute index)
+		curandState localState = state[idx];	// load random number generator state from global memory
+		
+		float randomRadius;		// random radius
+		float randomTheta;		// random theta
+		const float circle = 2 * M_PI; // 2Pi
+		int randomSamplePixelX;	// random sample pixel abscissa
+		int randomSamplePixelY;	// random sample pixel ordinate
+		unsigned int randomSamplePixelIdx;	// random sample pixel index
+		unsigned int randomSampleImagePixelIdx;	// random sample pixel absolute index in image
+		unsigned int randomSampleImagePixelChannelIdx;	// random sample pixel channel index
+
+		unsigned int targetPixelIdx = idx * imageChannels;	// target pixel (p) absolute index
+		unsigned int targetPixelChannelIdx;		// target pixel channel absolute index
+		uint8_t targetPixel[3]; // target pixel array for channels
+		uint8_t samplePixel[3];	// sample pixel array for channels
+		double outputPixel;		// output pixel values accumulator across iterations
+		uint8_t channelIdx;		// channel index
+		
+		uint8_t Emin[3];	// Emin array of size imageChannels
+		uint8_t Emax[3];	// Emax array of size imageChannels
+		
+		// for calculating (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+		uint8_t Edelta;
+		unsigned int dotProd, ElenSq;
+		
+		//outputImage[idx] = 0; // initialize output image as empty
+		
+		// initialize output pixel values accumulator to 0
+		outputPixel = 0.0f;
+
+		// iteration loop
+		for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+			// load target pixel and set Emin and Emax equal to target pixel value at each channel
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				targetPixelChannelIdx = targetPixelIdx + channelIdx;
+				Emin[channelIdx] = Emax[channelIdx] = targetPixel[channelIdx] = inputImage[targetPixelChannelIdx];
+			}
+
+			// generate random sample points and calculate envelope
+			randomSamplePixelIdx = 0;
+			while (randomSamplePixelIdx < numOfSamplePoints) {
+				randomRadius = curand_uniform(&localState) * radius; // get a random distance from the uniform real distribution
+				randomTheta = curand_uniform(&localState) * circle; // get a random angle from the uniform real distribution
+				randomSamplePixelX = targetPixelX + randomRadius * cosf(randomTheta);	// compute random pixel abscissa
+				if (randomSamplePixelX >= 0 && randomSamplePixelX < imageWidth) {	// if random pixel abscissa is within image
+					randomSamplePixelY = targetPixelY + randomRadius * sinf(randomTheta);	// compute random pixel ordinate
+					if (randomSamplePixelY >= 0 && randomSamplePixelY < imageHeight) {	// if random pixel ordinate is within image
+						randomSampleImagePixelIdx = (imageWidth * randomSamplePixelY + randomSamplePixelX) * imageChannels;	// get random sample pixel index in image
+						for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+							randomSampleImagePixelChannelIdx = randomSampleImagePixelIdx + channelIdx;	// get random sample pixel channel index
+							samplePixel[channelIdx] = inputImage[randomSampleImagePixelChannelIdx];
+							if (samplePixel[channelIdx] < Emin[channelIdx])			// if random sample pixel channel value is less than Emin at that channel
+								Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
+							else if (samplePixel[channelIdx] > Emax[channelIdx])	// if random sample pixel channel value is greater than Emax at that channel
+								Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
+						}
+						randomSamplePixelIdx++;	// advance random sample pixel index
+					}
+				}
+			}
+
+			dotProd = 0;
+			ElenSq = 0;
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				Edelta = Emax[channelIdx] - Emin[channelIdx];
+				dotProd += Edelta * (targetPixel[channelIdx] - Emin[channelIdx]);
+				ElenSq += Edelta * Edelta;
+			}
+
+			// calculate g = (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+			outputPixel += dotProd * 255.0 / ElenSq;
+		}
+		outputImage[idx] = outputPixel / numOfIterations;
+		state[idx] = localState;	// store updated random number generator state back into global memory
+	}
+}
+
+
+
+
 int main(int argc, char *argv[])
 {
 	if (argc != 7) {
@@ -604,7 +701,7 @@ int main(int argc, char *argv[])
 
 	char imageName[50];
 
-	char *grayscaleImageName = argv[1];
+	/*char *grayscaleImageName = argv[1];
 	cv::Mat grayscaleInputImage = cv::imread(grayscaleImageName, CV_LOAD_IMAGE_GRAYSCALE);
 	if (grayscaleInputImage.empty()) {
 		fprintf(stderr, "Cannot read grayscale image file %s.", grayscaleImageName);
@@ -637,21 +734,22 @@ int main(int argc, char *argv[])
 	printf("Finished STRESSGrayscaleToGrayscaleCPU3 in %fs, dumping to disk ...\n", STRESSG2GCPU3Duration);
 	cv::Mat G2GOutputImageCPU3(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
 	sprintf(imageName, "outG2GCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, G2GOutputImageCPU3);
+	cv::imwrite(imageName, G2GOutputImageCPU3);*/
 	
 	char *colorimageName = argv[2];
 	cv::Mat colorInputImage = cv::imread(colorimageName, CV_LOAD_IMAGE_COLOR);
+	uint8_t *C2GOutputImageData = (uint8_t*)malloc(colorInputImage.cols * colorInputImage.rows * sizeof(uint8_t));
 
 	printf("Running STRESSColorToGrayscaleCPU3 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
 	clock_t STRESSC2GCPU3Clock = clock();
-	STRESSColorToGrayscaleCPU3(grayscaleOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
+	STRESSColorToGrayscaleCPU3(C2GOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
 	double STRESSC2GCPU3Duration = (clock() - STRESSC2GCPU3Clock) / (double)CLOCKS_PER_SEC;
 	printf("Finished STRESSColorToGrayscaleCPU3 in %fs, dumping to disk ...\n", STRESSC2GCPU3Duration);
-	cv::Mat C2GOutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC1, grayscaleOutputImageData);
+	cv::Mat C2GOutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC1, C2GOutputImageData);
 	sprintf(imageName, "outC2GCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
 	cv::imwrite(imageName, C2GOutputImageCPU3);
 
-	unsigned int colorImageSize = colorInputImage.cols * colorInputImage.rows * colorInputImage.channels();
+	/*unsigned int colorImageSize = colorInputImage.cols * colorInputImage.rows * colorInputImage.channels();
 	uint8_t *colorOutputImageData = (uint8_t*)malloc(colorImageSize * sizeof(uint8_t));
 
 	printf("Running STRESSColorToColorCPU3 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
@@ -661,16 +759,19 @@ int main(int argc, char *argv[])
 	printf("Finished STRESSColorToColorCPU3 in %fs, dumping to disk ...\n", STRESSC2CCPU3Duration);
 	cv::Mat C2COutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC3, colorOutputImageData);
 	sprintf(imageName, "outC2CCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, C2COutputImageCPU3);
-	
-	system("PAUSE");
-	return 0;
+	cv::imwrite(imageName, C2COutputImageCPU3);*/
 
-    /*cudaError_t cudaStatus = testWithCuda(inputImage.data, outputImageData, inputImage.cols, inputImage.rows, inputImage.channels());
+	printf("Running STRESSColorToGrayscaleKernel2 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	unsigned long seed = time(NULL);
+	cudaError_t cudaStatus = testWithCuda(C2GOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations, seed);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "testWithCuda failed!");
         return 1;
     }
+	printf("Finished STRESSColorToGrayscaleKernel2, dumping to disk ...\n");
+	cv::Mat C2GOutputImageGPU2(colorInputImage.rows, colorInputImage.cols, CV_8UC1, C2GOutputImageData);
+	sprintf(imageName, "outC2GGPU2_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
+	cv::imwrite(imageName, C2GOutputImageGPU2);
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -680,22 +781,22 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-	cv::Mat outputImage(inputImage.rows, inputImage.cols, CV_8UC3, outputImageData);
-	printf("%s\n", "Writing output image to disk ...");
-	cv::imwrite("output.png", outputImage);
-
-    return 0;*/
+	system("PAUSE");
+    return 0;
 }
 
 // Helper function for using CUDA to add vectors in parallel.
-cudaError_t testWithCuda(uint8_t *inputImage, uint8_t *outputImage, unsigned int imageWidth, unsigned int imageHeight, unsigned int imageChannels)
+cudaError_t testWithCuda(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, short int **spraysX, short int **spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed)
 {
 	GpuTimer cudaMallocInputTimer;
 	GpuTimer cudaMallocOutputTimer;
+	GpuTimer cudaMallocCurandStatesTimer;
 	GpuTimer cudaMemcpyInputTimer;
-	GpuTimer cudaKernelTimer;
+	GpuTimer cudaSetupRandomKernelTimer;
+	GpuTimer cudaSTRESSColorToGrayscaleKernelTimer;
 	GpuTimer cudaMemcpyOutputTimer;
-	unsigned int imageSize = imageWidth * imageHeight * imageChannels;
+	unsigned int outputImageSize = imageWidth * imageHeight;
+	unsigned int inputImageSize = outputImageSize * imageChannels;
 	cudaError_t cudaStatus;
 
     // Choose which GPU to run on, change this on a multi-GPU system.
@@ -708,46 +809,83 @@ cudaError_t testWithCuda(uint8_t *inputImage, uint8_t *outputImage, unsigned int
 	// Allocate GPU buffers for two vectors (one input, one output).
 	uint8_t *d_InputImage;
 	cudaMallocInputTimer.Start();
-    cudaStatus = cudaMalloc((void**)&d_InputImage, imageSize * sizeof(uint8_t));
+    cudaStatus = cudaMalloc((void**)&d_InputImage, inputImageSize * sizeof(uint8_t));
 	cudaMallocInputTimer.Stop();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc (input image) failed!");
         goto Error;
     }
-	printf("Time to allocate input:\t\t\t\t%f ms\n", cudaMallocInputTimer.Elapsed());
+	printf("Time to allocate input:\t\t\t\t\t%f ms\n", cudaMallocInputTimer.Elapsed());
 
 	
 	uint8_t *d_OutputImage;
 	cudaMallocOutputTimer.Start();
-    cudaStatus = cudaMalloc((void**)&d_OutputImage, imageSize * sizeof(uint8_t));
+    cudaStatus = cudaMalloc((void**)&d_OutputImage, outputImageSize * sizeof(uint8_t));
 	cudaMallocOutputTimer.Stop();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc (output image) failed!");
         goto Error;
     }
-	printf("Time to allocate output:\t\t\t%f ms\n", cudaMallocOutputTimer.Elapsed());
+	printf("Time to allocate output:\t\t\t\t%f ms\n", cudaMallocOutputTimer.Elapsed());
 
-    // Copy input vectors from host memory to GPU buffers.
-	cudaMemcpyInputTimer.Start();
-    cudaStatus = cudaMemcpy(d_InputImage, inputImage, imageSize * sizeof(uint8_t), cudaMemcpyHostToDevice);
-	cudaMemcpyInputTimer.Stop();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy (host -> device) failed!");
-        goto Error;
-    }
-	printf("Time to copy input from host to device:\t\t%f ms\n", cudaMemcpyInputTimer.Elapsed());
-
-    // Launch a kernel on the GPU with one thread for each element.
+	// Declare block and grid dimensions
 	dim3 dimBlock(BLOCK_WIDTH, BLOCK_WIDTH, 1);
-	dim3 dimGrid((imageWidth - 1) / BLOCK_WIDTH + 1, (imageHeight - 1) / BLOCK_WIDTH + 1, 1);
-	cudaKernelTimer.Start();
-    testKernel<<<dimGrid, dimBlock>>>(d_InputImage, d_OutputImage, imageWidth, imageHeight, imageChannels);
-	cudaKernelTimer.Stop();
+	unsigned int gridDimX = (imageWidth - 1) / BLOCK_WIDTH + 1;
+	unsigned int gridDimY = (imageHeight - 1) / BLOCK_WIDTH + 1;
+	dim3 dimGrid(gridDimX, gridDimY, 1);
+
+	// Allocate random number generator states
+	//unsigned int numOfThreads = gridDimX * gridDimY * BLOCK_WIDTH * BLOCK_WIDTH;
+	curandState *d_CURANDStates;
+	cudaMallocCurandStatesTimer.Start();
+	cudaStatus = cudaMalloc((void**)&d_CURANDStates, outputImageSize * sizeof(curandState));
+	cudaMallocCurandStatesTimer.Stop();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc (CURAND states) failed!");
+		goto Error;
+	}
+	printf("Time to allocate CURAND states:\t\t\t\t%f ms\n", cudaMallocCurandStatesTimer.Elapsed());
+
+	// Launch the setup random number generator kernel on the GPU with one thread for each element.
+	cudaSetupRandomKernelTimer.Start();
+	setupRandomKernel <<<dimGrid, dimBlock>>>(d_CURANDStates, seed, imageWidth, imageHeight);
+	cudaSetupRandomKernelTimer.Stop();
+
+	// Check for any errors launching the kernel
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "setupRandomKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		goto Error;
+	}
+
+	// cudaDeviceSynchronize waits for the kernel to finish, and returns
+	// any errors encountered during the launch.
+	cudaStatus = cudaDeviceSynchronize();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching setupRandomKernel!\n", cudaStatus);
+		goto Error;
+	}
+	printf("Time to execute setupRandomKernel kernel:\t\t%f ms\n", cudaSetupRandomKernelTimer.Elapsed());
+
+	// Copy input vectors from host memory to GPU buffers.
+	cudaMemcpyInputTimer.Start();
+	cudaStatus = cudaMemcpy(d_InputImage, inputImage, inputImageSize * sizeof(uint8_t), cudaMemcpyHostToDevice);
+	cudaMemcpyInputTimer.Stop();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy (host -> device) failed!");
+		goto Error;
+	}
+	printf("Time to copy input from host to device:\t\t\t%f ms\n", cudaMemcpyInputTimer.Elapsed());
+
+	// Launch the STRESS color to grayscale kernel on the GPU with one thread for each element.
+	cudaSTRESSColorToGrayscaleKernelTimer.Start();
+    STRESSColorToGrayscaleKernel2<<<dimGrid, dimBlock>>>(d_CURANDStates, d_OutputImage, d_InputImage, imageWidth, imageHeight, imageChannels, radius, numOfSamplePoints, numOfIterations);
+	cudaSTRESSColorToGrayscaleKernelTimer.Stop();
 
     // Check for any errors launching the kernel
     cudaStatus = cudaGetLastError();
     if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "testKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+        fprintf(stderr, "STRESSColorToGrayscaleKernel2 launch failed: %s\n", cudaGetErrorString(cudaStatus));
         goto Error;
     }
     
@@ -755,14 +893,14 @@ cudaError_t testWithCuda(uint8_t *inputImage, uint8_t *outputImage, unsigned int
     // any errors encountered during the launch.
     cudaStatus = cudaDeviceSynchronize();
     if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
+        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching STRESSColorToGrayscaleKernel2!\n", cudaStatus);
         goto Error;
     }
-	printf("Time to execute kernel:\t\t\t\t%f ms\n", cudaKernelTimer.Elapsed());
+	printf("Time to execute STRESSColorToGrayscaleKernel2 kernel:\t%f ms\n", cudaSTRESSColorToGrayscaleKernelTimer.Elapsed());
 
     // Copy output vector from GPU buffer to host memory.
 	cudaMemcpyOutputTimer.Start();
-    cudaStatus = cudaMemcpy(outputImage, d_OutputImage, imageSize * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+    cudaStatus = cudaMemcpy(outputImage, d_OutputImage, outputImageSize * sizeof(uint8_t), cudaMemcpyDeviceToHost);
 	cudaMemcpyOutputTimer.Stop();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy (device -> host) failed!");
@@ -770,12 +908,14 @@ cudaError_t testWithCuda(uint8_t *inputImage, uint8_t *outputImage, unsigned int
     }
 
 	{
-		printf("Time to copy output from device to host:\t%f ms\n", cudaMemcpyOutputTimer.Elapsed());
+		printf("Time to copy output from device to host:\t\t%f ms\n", cudaMemcpyOutputTimer.Elapsed());
 	}
 
+
 Error:
+	cudaFree(d_CURANDStates);
 	cudaFree(d_InputImage);
     cudaFree(d_OutputImage);
     
-    return cudaStatus;
+	return cudaStatus;
 }
