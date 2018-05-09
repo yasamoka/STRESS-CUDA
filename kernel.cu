@@ -28,8 +28,10 @@ cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *in
 cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, short int **spraysX, short int **spraysY, const unsigned int numOfSharedSprays, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed);
 #elif defined(ENABLE_STRESS_C2G_GPU_2)
 cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *grayscaleOutputImage, uint8_t *colorInputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed);
-#elif defined(ENABLE_STRESS_C2G_GPU_2B)
+#elif defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
 cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *grayscaleOutputImage, uint8_t *colorInputImage, float *sinLUT, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed);
+#elif defined(ENABLE_STRESS_C2G_GPU_2C)
+cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *grayscaleOutputImage, uint8_t *colorInputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed);
 #elif defined(ENABLE_STRESS_C2G_GPU_3)
 cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *grayscaleOutputImage, uint8_t *colorInputImage, short int **spraysX, short int **spraysY, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed);
 #endif
@@ -252,7 +254,7 @@ void STRESSGrayscaleToGrayscaleCPU2(uint8_t *outputImage, uint8_t *inputImage, c
 #if defined(ENABLE_STRESS_G2G_CPU_3)
 // This version of the function is a hybrid between the first two approaches. It uses pre-computed sprays similarly to the first approach.
 // However, for any pixel, if any sample point in its chosen pre-computed spray is found to be lying outside the image, it is replaced with
-// a randomly chosen sample points lying within the image. This should solve the issue of the first approach while not being as slow as the second approach,
+// randomly chosen sample points lying within the image. This should solve the issue of the first approach while not being as slow as the second approach,
 // particularly for pixels not close to the edges of the image, since the likelihood of a sample point not lying within the image for those diminishes greatly.
 void STRESSGrayscaleToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, short int **spraysX, short int **spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations) {
 	float randomRadius;													// random radius
@@ -297,7 +299,6 @@ void STRESSGrayscaleToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, c
 				randomSprayY = spraysY[randomSprayIdx];
 
 				// calculate envelope
-				sampleIdx = 0;	// reset sample index to 0
 				numOfValidSamplePoints = 0;	// reset number of valid sample points to 0
 				for (sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
 					samplePixelX = targetPixelX + randomSprayX[sampleIdx];  // get sample pixel abscissa in input image
@@ -348,6 +349,10 @@ void STRESSGrayscaleToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, c
 #endif
 
 #if defined(ENABLE_STRESS_C2G_CPU_3)
+// This version of the function is a hybrid between the first two approaches. It uses pre-computed sprays similarly to the first approach.
+// However, for any pixel, if any sample point in its chosen pre-computed spray is found to be lying outside the image, it is replaced with
+// randomly chosen sample points lying within the image. This should solve the issue of the first approach while not being as slow as the second approach,
+// particularly for pixels not close to the edges of the image, since the likelihood of a sample point not lying within the image for those diminishes greatly.
 void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, short int **spraysX, short int **spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations) {
 	float randomRadius;													// random radius
 	float randomTheta;													// random theta
@@ -572,7 +577,7 @@ void STRESSColorToColorCPU3(uint8_t *outputImage, uint8_t *inputImage, const uns
 }
 #endif
 
-#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_3)
+#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
 // thanks to http://aresio.blogspot.com/2011/05/cuda-random-numbers-inside-kernels.html
 // and to https://hpc.oit.uci.edu/nvidia-doc/sdk-cuda-doc/CUDALibraries/doc/CURAND_Library.pdf
 __global__ void setupRandomKernel(curandState *state, const unsigned long long seed, const unsigned short int imageWidth, const unsigned short int imageHeight) {
@@ -580,10 +585,10 @@ __global__ void setupRandomKernel(curandState *state, const unsigned long long s
 	unsigned int col = blockDim.x * blockIdx.x + threadIdx.x;
 	if (row < imageHeight && col < imageWidth) {
 		unsigned int idx = imageWidth * row + col; // absolute thread index
-		//curand_init(seed, idx, 0, &state[idx]);	// initialize random number generator state in global memory
-		//curand_init((unsigned long long)clock(), 0, 0, &state[idx]);	// initialize random number generator state in global memory
-		//curand_init(seed, 0, 0, &state[idx]);	// initialize random number generator state in global memory
-		//curand_init(seed, idx % 2048, 0, &state[idx]);	// initialize random number generator state in global memory
+		//curand_init(seed, idx, 0, &state[idx]);
+		//curand_init((unsigned long long)clock(), 0, 0, &state[idx]);
+		//curand_init(seed, 0, 0, &state[idx]);
+		//curand_init(seed, idx % 2048, 0, &state[idx]);
 		curand_init(seed + idx, 0, 0, &state[idx]);	// initialize random number generator state in global memory
 	}
 }
@@ -636,23 +641,20 @@ __global__ void STRESSColorToGrayscaleKernel1(curandState *state, uint8_t *outpu
 
 			// get random sample points from spray and calculate envelope
 			sprayIdx = curand_uniform(&localState) * numOfSprays;	// choose spray at random from pre-computed sprays
-			//sprayIdx++;
 			spraySampleStartIdx = numOfSamplePoints * sprayIdx;	// calculate spray sample start index
 			for (sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
 				spraySampleIdx = spraySampleStartIdx + sampleIdx;
-				samplePixelX = targetPixelX + spraysX[spraySampleIdx];	// compute smaple pixel abscissa
-				if (samplePixelX >= 0 && samplePixelX < imageWidth) {	// if pixel abscissa is within image - collapse into one if
-					samplePixelY = targetPixelY + spraysY[spraySampleIdx];	// compute sample pixel ordinate
-					if (samplePixelY >= 0 && samplePixelY < imageHeight) {	// if sample pixel ordinate is within image
-						sampleImagePixelIdx = (imageWidth * samplePixelY + samplePixelX) * imageChannels;	// get sample pixel index in image
-						for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
-							sampleImagePixelChannelIdx = sampleImagePixelIdx + channelIdx;	// get sample pixel channel index
-							samplePixel[channelIdx] = inputImage[sampleImagePixelChannelIdx];
-							if (samplePixel[channelIdx] < Emin[channelIdx])			// if sample pixel channel value is less than Emin at that channel
-								Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
-							else if (samplePixel[channelIdx] > Emax[channelIdx])	// if sample pixel channel value is greater than Emax at that channel
-								Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
-						}
+				samplePixelX = targetPixelX + spraysX[spraySampleIdx];	// compute sample pixel abscissa
+				samplePixelY = targetPixelY + spraysY[spraySampleIdx];	// compute sample pixel ordinate
+				if (samplePixelX >= 0 && samplePixelX < imageWidth && samplePixelY >= 0 && samplePixelY < imageHeight) {	// if sample pixel is within image
+					sampleImagePixelIdx = (imageWidth * samplePixelY + samplePixelX) * imageChannels;	// get sample pixel index in image
+					for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+						sampleImagePixelChannelIdx = sampleImagePixelIdx + channelIdx;	// get sample pixel channel index
+						samplePixel[channelIdx] = inputImage[sampleImagePixelChannelIdx];
+						if (samplePixel[channelIdx] < Emin[channelIdx])			// if sample pixel channel value is less than Emin at that channel
+							Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
+						else if (samplePixel[channelIdx] > Emax[channelIdx])	// if sample pixel channel value is greater than Emax at that channel
+							Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
 					}
 				}
 			}
@@ -759,19 +761,17 @@ __global__ void STRESSColorToGrayscaleKernel1B(curandState *state, uint8_t *outp
 			for (sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
 				sharedSpraySampleXIdx = sharedSpraySampleXStartIdx + sampleIdx;
 				sharedSpraySampleYIdx = sharedSpraySampleYStartIdx + sampleIdx;
-				samplePixelX = targetPixelX + sharedSprays[sharedSpraySampleXIdx];	// compute smaple pixel abscissa
-				if (samplePixelX >= 0 && samplePixelX < imageWidth) {	// if pixel abscissa is within image - collapse into one if //////// HERE IS THE ISSUE
-					samplePixelY = targetPixelY + sharedSprays[sharedSpraySampleYIdx];	// compute sample pixel ordinate
-					if (samplePixelY >= 0 && samplePixelY < imageHeight) {	// if sample pixel ordinate is within image
-						sampleImagePixelIdx = (imageWidth * samplePixelY + samplePixelX) * imageChannels;	// get sample pixel index in image
-						for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
-							sampleImagePixelChannelIdx = sampleImagePixelIdx + channelIdx;	// get sample pixel channel index
-							samplePixel[channelIdx] = inputImage[sampleImagePixelChannelIdx];
-							if (samplePixel[channelIdx] < Emin[channelIdx])			// if sample pixel channel value is less than Emin at that channel
-								Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
-							else if (samplePixel[channelIdx] > Emax[channelIdx])	// if sample pixel channel value is greater than Emax at that channel
-								Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
-						}
+				samplePixelX = targetPixelX + sharedSprays[sharedSpraySampleXIdx];	// compute sample pixel abscissa
+				samplePixelY = targetPixelY + sharedSprays[sharedSpraySampleYIdx];	// compute sample pixel ordinate
+				if (samplePixelX >= 0 && samplePixelX < imageWidth && samplePixelY >= 0 && samplePixelY < imageHeight) {	// if sample pixel is within image
+					sampleImagePixelIdx = (imageWidth * samplePixelY + samplePixelX) * imageChannels;	// get sample pixel index in image
+					for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+						sampleImagePixelChannelIdx = sampleImagePixelIdx + channelIdx;	// get sample pixel channel index
+						samplePixel[channelIdx] = inputImage[sampleImagePixelChannelIdx];
+						if (samplePixel[channelIdx] < Emin[channelIdx])			// if sample pixel channel value is less than Emin at that channel
+							Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
+						else if (samplePixel[channelIdx] > Emax[channelIdx])	// if sample pixel channel value is greater than Emax at that channel
+							Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
 					}
 				}
 			}
@@ -794,7 +794,8 @@ __global__ void STRESSColorToGrayscaleKernel1B(curandState *state, uint8_t *outp
 #endif
 
 #if defined(ENABLE_STRESS_C2G_GPU_2)
-// no pre-computed random sprays
+// Does not use pre-computed random sprays. Instead, it generates, in each iteration, for each pixel in the image, a random spray for that pixel.
+// This solves the issue of reduced sampling seen in the first version of the function. However, this approach is much slower than using pre-computed sprays
 __global__ void STRESSColorToGrayscaleKernel2(curandState *state, uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
 	unsigned int targetPixelX = blockDim.x * blockIdx.x + threadIdx.x; // target pixel abscissa
 	unsigned int targetPixelY = blockDim.y * blockIdx.y + threadIdx.y; // target pixel ordinate
@@ -889,12 +890,130 @@ __global__ void STRESSColorToGrayscaleKernel2B(curandState *state, uint8_t *outp
 
 	// copy Sine LUT from global memory to shared memory in coalesced form
 	unsigned int threadBlockIdx = blockDim.x * threadIdx.y + threadIdx.x;	// thread absolute index in thread block
-	unsigned int blockSize = blockDim.x * blockDim.y; // thread block size
-	for (unsigned int sinLUTIdx = threadBlockIdx; sinLUTIdx < sinLUTLength; sinLUTIdx += blockSize) {
+	unsigned int stride = blockDim.x * blockDim.y; // stride = thread block size
+	for (unsigned int sinLUTIdx = threadBlockIdx; sinLUTIdx < sinLUTLength; sinLUTIdx += stride) {
 		sharedSinLUT[sinLUTIdx] = sinLUT[sinLUTIdx];
 	}
 	__syncthreads();
 	
+	unsigned int targetPixelX = blockDim.x * blockIdx.x + threadIdx.x; // target pixel abscissa
+	unsigned int targetPixelY = blockDim.y * blockIdx.y + threadIdx.y; // target pixel ordinate
+
+	if (targetPixelX < imageWidth && targetPixelY < imageHeight) {	// if target pixel is within image
+		unsigned int idx = imageWidth * targetPixelY + targetPixelX;	// thread / output pixel absolute index
+		curandState localState = state[idx];	// load random number generator state from global memory
+		float randomRadius;		// random radius
+		float randomTheta;		// random theta (normalized)
+
+		float sinLUTFloatIdx;	// Sine LUT float index (for linear interpolation)
+		float sinLUTFloatOffset;	// Sine LUT float offset from floor index (for linear interpolation)
+		unsigned int sinLUTFloorSinValIdx;		// Sine LUT floor value index (Sine)
+		unsigned int sinLUTFloorCosValIdx;		// Sine LUT floor value index (Cosine)
+		float sinLUTFloorVal;	// Sine LUT floor value for particular theta (for linear interpolation)
+		float sinLUTCeilVal;	// Sine LUT ceil value for particular theta (for linear interpolation)
+		float sinLUTInterpolatedVal;	// Sine LUT interpolated value
+		const unsigned int sinLUTCosShift = sinLUTLength / 4; // Sine LUT Cosine offset (for alignment with Sine)
+
+		int randomSamplePixelX;	// random sample pixel abscissa
+		int randomSamplePixelY;	// random sample pixel ordinate
+		unsigned int randomSamplePixelIdx;	// random sample pixel index
+		unsigned int randomSampleImagePixelIdx;	// random sample pixel absolute index in image
+		unsigned int randomSampleImagePixelChannelIdx;	// random sample pixel channel index
+
+		unsigned int targetPixelIdx = idx * imageChannels;	// target pixel (p) absolute index
+		unsigned int targetPixelChannelIdx;		// target pixel channel absolute index
+		uint8_t targetPixel[3]; // target pixel array for channels
+		uint8_t samplePixel[3];	// sample pixel array for channels
+		double outputPixel;		// output pixel values accumulator across iterations
+		uint8_t channelIdx;		// channel index
+
+		uint8_t Emin[3];	// Emin array of size imageChannels
+		uint8_t Emax[3];	// Emax array of size imageChannels
+
+		// for calculating (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+		uint8_t Edelta;
+		unsigned int dotProd, ElenSq;
+
+		// initialize output pixel values accumulator to 0
+		outputPixel = 0.0f;
+
+		// iteration loop
+		for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+			// load target pixel and set Emin and Emax equal to target pixel value at each channel
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				targetPixelChannelIdx = targetPixelIdx + channelIdx;
+				Emin[channelIdx] = Emax[channelIdx] = targetPixel[channelIdx] = inputImage[targetPixelChannelIdx];
+			}
+
+			// generate random sample points and calculate envelope
+			randomSamplePixelIdx = 0;
+			while (randomSamplePixelIdx < numOfSamplePoints) {
+				randomRadius = curand_uniform(&localState) * radius; // get a random distance from the uniform real distribution
+				randomTheta = curand_uniform(&localState);	// get a random theta from the uniform real distribution
+				
+				sinLUTFloatIdx = randomTheta * (sinLUTLength - 1);	// calculate Sine LUT float index (Sine)
+				sinLUTFloorSinValIdx = floor(sinLUTFloatIdx);	// calculate Sine LUT floor value index (Sine)
+				sinLUTFloatOffset = sinLUTFloatIdx - sinLUTFloorSinValIdx;	// calculate Sine LUT float offset from floor index (Sine - same for Cosine due to alignment)
+				
+				sinLUTFloorCosValIdx = (sinLUTFloorSinValIdx + sinLUTCosShift) % sinLUTLength;	// calculate Sine LUT floor value index (Cosine) - loopback if random theta with shift >= 1.0 (angle >= 2Pi radians)
+				
+				sinLUTFloorVal = sharedSinLUT[sinLUTFloorCosValIdx];	// get Sine LUT floor value (Cosine)
+				sinLUTCeilVal = sharedSinLUT[(sinLUTFloorCosValIdx + 1) % sinLUTLength];	// get Sine LUT ceil value (Cosine)
+				sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal) / 2;	// calculate Sine LUT interpolated value (Cosine)
+				randomSamplePixelX = targetPixelX + randomRadius * sinLUTInterpolatedVal;	// compute random pixel abscissa
+
+				sinLUTFloorVal = sharedSinLUT[sinLUTFloorSinValIdx % sinLUTLength];
+				sinLUTCeilVal = sharedSinLUT[(sinLUTFloorSinValIdx + 1) % sinLUTLength];
+				sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal) / 2;	// calculate Sine LUT interpolated value (Sine)
+				randomSamplePixelY = targetPixelY + randomRadius * sinLUTInterpolatedVal;	// compute random pixel ordinate
+
+				if (randomSamplePixelX >= 0 && randomSamplePixelX < imageWidth && randomSamplePixelY >= 0 && randomSamplePixelY < imageHeight) {	// if random pixel is within image
+					randomSampleImagePixelIdx = (imageWidth * randomSamplePixelY + randomSamplePixelX) * imageChannels;	// get random sample pixel index in image
+					for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+						randomSampleImagePixelChannelIdx = randomSampleImagePixelIdx + channelIdx;	// get random sample pixel channel index
+						samplePixel[channelIdx] = inputImage[randomSampleImagePixelChannelIdx];
+						if (samplePixel[channelIdx] < Emin[channelIdx])			// if random sample pixel channel value is less than Emin at that channel
+							Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
+						else if (samplePixel[channelIdx] > Emax[channelIdx])	// if random sample pixel channel value is greater than Emax at that channel
+							Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
+					}
+					randomSamplePixelIdx++;	// advance random sample pixel index
+				}
+			}
+
+			dotProd = 0;
+			ElenSq = 0;
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				Edelta = Emax[channelIdx] - Emin[channelIdx];
+				dotProd += Edelta * (targetPixel[channelIdx] - Emin[channelIdx]);
+				ElenSq += Edelta * Edelta;
+			}
+
+			// calculate g = (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+			outputPixel += dotProd * 255.0 / ElenSq;
+		}
+		outputImage[idx] = outputPixel / numOfIterations;
+		state[idx] = localState;	// store updated random number generator state back into global memory
+	}
+}
+#endif
+
+#if defined(ENABLE_STRESS_C2G_GPU_2C)
+// similar to previous approach but calculates Sine LUT in thread block instead of loading from global memory
+__global__ void STRESSColorToGrayscaleKernel2C(curandState *state, uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
+	extern __shared__ float sharedSinLUT[];
+
+	// copy Sine LUT from global memory to shared memory in coalesced form
+	unsigned int threadBlockIdx = blockDim.x * threadIdx.y + threadIdx.x;	// thread absolute index in thread block
+	unsigned int stride = blockDim.x * blockDim.y; // stride = thread block size
+	float lambda = M_PI / (sinLUTLength / 2);
+	float theta;
+	for (unsigned int sinLUTIdx = threadBlockIdx; sinLUTIdx < sinLUTLength; sinLUTIdx += stride) {
+		theta = lambda * sinLUTIdx;
+		sharedSinLUT[sinLUTIdx] = sinf(theta);
+	}
+	__syncthreads();
+
 	unsigned int targetPixelX = blockDim.x * blockIdx.x + threadIdx.x; // target pixel abscissa
 	unsigned int targetPixelY = blockDim.y * blockIdx.y + threadIdx.y; // target pixel ordinate
 
@@ -950,20 +1069,20 @@ __global__ void STRESSColorToGrayscaleKernel2B(curandState *state, uint8_t *outp
 			while (randomSamplePixelIdx < numOfSamplePoints) {
 				randomRadius = curand_uniform(&localState) * radius; // get a random distance from the uniform real distribution
 				randomTheta = curand_uniform(&localState);	// get a random theta from the uniform real distribution
-				
+
 				sinLUTFloatIdx = randomTheta * sinLUTLength;	// calculate Sine LUT float index (Sine)
 				sinLUTFloorSinValIdx = floor(sinLUTFloatIdx);	// calculate Sine LUT floor value index (Sine)
 				sinLUTFloatOffset = sinLUTFloatIdx - sinLUTFloorSinValIdx;	// calculate Sine LUT float offset from floor index (Sine - same for Cosine due to alignment)
-				
+
 				sinLUTFloorCosValIdx = (sinLUTFloorSinValIdx + sinLUTCosShift) % sinLUTLength;	// calculate Sine LUT floor value index (Cosine) - loopback if random theta with shift >= 1.0 (angle >= 2Pi radians)
-				
-				sinLUTFloorVal = sinLUT[sinLUTFloorCosValIdx];	// get Sine LUT floor value (Cosine)
-				sinLUTCeilVal = sinLUT[sinLUTFloorCosValIdx + 1];	// get Sine LUT ceil value (Cosine)
+
+				sinLUTFloorVal = sharedSinLUT[sinLUTFloorCosValIdx];	// get Sine LUT floor value (Cosine)
+				sinLUTCeilVal = sharedSinLUT[(sinLUTFloorCosValIdx + 1) % sinLUTLength];	// get Sine LUT ceil value (Cosine)
 				sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal) / 2;	// calculate Sine LUT interpolated value (Cosine)
 				randomSamplePixelX = targetPixelX + randomRadius * sinLUTInterpolatedVal;	// compute random pixel abscissa
 
-				sinLUTFloorVal = sinLUT[sinLUTFloorSinValIdx];
-				sinLUTCeilVal = sinLUT[sinLUTFloorSinValIdx + 1];
+				sinLUTFloorVal = sharedSinLUT[sinLUTFloorSinValIdx % sinLUTLength];
+				sinLUTCeilVal = sharedSinLUT[(sinLUTFloorSinValIdx + 1) % sinLUTLength];
 				sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal) / 2;	// calculate Sine LUT interpolated value (Sine)
 				randomSamplePixelY = targetPixelY + randomRadius * sinLUTInterpolatedVal;	// compute random pixel ordinate
 
@@ -978,6 +1097,280 @@ __global__ void STRESSColorToGrayscaleKernel2B(curandState *state, uint8_t *outp
 							Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
 					}
 					randomSamplePixelIdx++;	// advance random sample pixel index
+				}
+			}
+
+			dotProd = 0;
+			ElenSq = 0;
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				Edelta = Emax[channelIdx] - Emin[channelIdx];
+				dotProd += Edelta * (targetPixel[channelIdx] - Emin[channelIdx]);
+				ElenSq += Edelta * Edelta;
+			}
+
+			// calculate g = (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+			outputPixel += dotProd * 255.0 / ElenSq;
+		}
+		outputImage[idx] = outputPixel / numOfIterations;
+		state[idx] = localState;	// store updated random number generator state back into global memory
+	}
+}
+#endif
+
+#if defined(ENABLE_STRESS_C2G_GPU_2D)
+// similar to B but loads a Sine LUT that is 4 times smaller for the same precision or
+// 4 times more precise for the same size since it only includes angles <= Pi/2 radians.
+// This approach thus maps all angles to <= Pi/2 radians.
+__global__ void STRESSColorToGrayscaleKernel2D(curandState *state, uint8_t *outputImage, uint8_t *inputImage, float *sinLUT, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
+	extern __shared__ float sharedSinLUT[];
+
+	// copy Sine LUT from global memory to shared memory in coalesced form
+	unsigned int threadBlockIdx = blockDim.x * threadIdx.y + threadIdx.x;	// thread absolute index in thread block
+	unsigned int stride = blockDim.x * blockDim.y; // stride = thread block size
+	for (unsigned int sinLUTIdx = threadBlockIdx; sinLUTIdx < sinLUTLength; sinLUTIdx += stride) {
+		sharedSinLUT[sinLUTIdx] = sinLUT[sinLUTIdx];
+	}
+	__syncthreads();
+
+	unsigned int targetPixelX = blockDim.x * blockIdx.x + threadIdx.x; // target pixel abscissa
+	unsigned int targetPixelY = blockDim.y * blockIdx.y + threadIdx.y; // target pixel ordinate
+
+	if (targetPixelX < imageWidth && targetPixelY < imageHeight) {	// if target pixel is within image
+		unsigned int idx = imageWidth * targetPixelY + targetPixelX;	// thread / output pixel absolute index
+		curandState localState = state[idx];	// load random number generator state from global memory
+
+		float randomRadius;		// random radius
+		float randomTheta;		// random angle (normalized)
+		float alpha;			// angle restricted to <= Pi/2 radians (normalized)
+
+		float sinLUTFloatSinIdx;	// Sine LUT float index (Sine, for linear interpolation)
+		float sinLUTFloatCosIdx;	// Sine LUT float index (Cosine, for linear interpolation)
+		float sinLUTFloatSinOffset;	// Sine LUT float offset from floor index (Sine, for linear interpolation)
+		float sinLUTFloatCosOffset;	// Sine LUT float offset from floor index (Cosine, for linear interpolation)
+		unsigned int sinLUTFloorSinValIdx;		// Sine LUT floor value index (Sine)
+		unsigned int sinLUTFloorCosValIdx;		// Sine LUT floor value index (Cosine)
+		float sinLUTFloorSinVal;	// Sine LUT floor value for particular theta (Sine, for linear interpolation)
+		float sinLUTFloorCosVal;	// Sine LUT floor value for particular theta (Cosine, for linear interpolation)
+		float sinLUTCeilSinVal;	// Sine LUT ceil value for particular theta (Sine, for linear interpolation)
+		float sinLUTCeilCosVal;	// Sine LUT ceil value for particular theta (Sine, for linear interpolation)
+		float sinLUTInterpolatedSinVal;	// Sine LUT interpolated value (Sine)
+		float sinLUTInterpolatedCosVal;	// Sine LUT interpolated value (Cosine)
+		bool sinIsNegative;		// Sine is negative flag
+		bool cosIsNegative;		// Cosine is negative flag
+		uint8_t sinNegator;		// Sine negator
+		uint8_t cosNegator;		// Cosine negator
+
+		int randomSamplePixelX;	// random sample pixel abscissa
+		int randomSamplePixelY;	// random sample pixel ordinate
+		unsigned int randomSamplePixelIdx;	// random sample pixel index
+		unsigned int randomSampleImagePixelIdx;	// random sample pixel absolute index in image
+		unsigned int randomSampleImagePixelChannelIdx;	// random sample pixel channel index
+
+		unsigned int targetPixelIdx = idx * imageChannels;	// target pixel (p) absolute index
+		unsigned int targetPixelChannelIdx;		// target pixel channel absolute index
+		uint8_t targetPixel[3]; // target pixel array for channels
+		uint8_t samplePixel[3];	// sample pixel array for channels
+		double outputPixel;		// output pixel values accumulator across iterations
+		uint8_t channelIdx;		// channel index
+
+		uint8_t Emin[3];	// Emin array of size imageChannels
+		uint8_t Emax[3];	// Emax array of size imageChannels
+
+		// for calculating (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+		uint8_t Edelta;
+		unsigned int dotProd, ElenSq;
+
+		// initialize output pixel values accumulator to 0
+		outputPixel = 0.0f;
+
+		// iteration loop
+		for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+			// load target pixel and set Emin and Emax equal to target pixel value at each channel
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				targetPixelChannelIdx = targetPixelIdx + channelIdx;
+				Emin[channelIdx] = Emax[channelIdx] = targetPixel[channelIdx] = inputImage[targetPixelChannelIdx];
+			}
+
+			// generate random sample points and calculate envelope
+			randomSamplePixelIdx = 0;
+			while (randomSamplePixelIdx < numOfSamplePoints) {
+				randomRadius = curand_uniform(&localState) * radius; // get a random distance from the uniform real distribution
+				randomTheta = curand_uniform(&localState);	// get a random theta from the uniform real distribution
+
+				alpha = (uint8_t)(randomTheta <= 0.25f) * randomTheta + (uint8_t)(randomTheta > 0.25f && randomTheta <= 0.5f) * (0.5f - randomTheta) + (uint8_t)(randomTheta > 0.5f && randomTheta <= 0.75f) * (randomTheta - 0.5f) + (uint8_t)(randomTheta > 0.75f) * (1.0f - randomTheta); // trigonometric circle - avoids control divergence
+
+				sinLUTFloatSinIdx = alpha * 4 * (sinLUTLength - 1);	// calculate Sine LUT float index (Sine)
+				sinLUTFloorSinValIdx = floor(sinLUTFloatSinIdx);	// calculate Sine LUT floor value index (Sine)
+				sinLUTFloatSinOffset = sinLUTFloatSinIdx - sinLUTFloorSinValIdx;	// calculate Sine LUT float offset from floor index (Sine)
+				sinLUTFloorSinVal = sharedSinLUT[sinLUTFloorSinValIdx % sinLUTLength];	// get Sine LUT floor value (Sine)
+				sinLUTCeilSinVal = sharedSinLUT[(sinLUTFloorSinValIdx + 1) % sinLUTLength];	// get Sine LUT ceil value (Sine)
+				sinIsNegative = (randomTheta > 0.5f); // value becomes negative if random theta >= 0.5 (angles >= Pi radians) - avoids control divergence
+				sinNegator = (uint8_t)!sinIsNegative - (uint8_t)sinIsNegative;
+				sinLUTInterpolatedSinVal = sinNegator * (sinLUTFloatSinOffset * sinLUTCeilSinVal + (1.0f - sinLUTFloatSinOffset) * sinLUTFloorSinVal) / 2;	// calculate Sine LUT interpolated value (Sine)
+				randomSamplePixelY = targetPixelY + randomRadius * sinLUTInterpolatedSinVal;	// compute random pixel ordinate
+				
+				sinLUTFloatCosIdx = (0.25f - alpha) * 4 * (sinLUTLength - 1);
+				sinLUTFloorCosValIdx = floor(sinLUTFloatCosIdx);	// calculate Sine LUT floor value index (Cosine, complement of Sine, aligned)
+				sinLUTFloatCosOffset = sinLUTFloatCosIdx - sinLUTFloorCosValIdx;	// calculate Sine LUT float offset from floor index (Cosine, complement of Sine)
+				sinLUTFloorCosVal = sharedSinLUT[sinLUTFloorCosValIdx % sinLUTLength];	// get Sine LUT floor value (Cosine)
+				sinLUTCeilCosVal = sharedSinLUT[(sinLUTFloorCosValIdx + 1) % sinLUTLength];	// get Sine LUT ceil value (Cosine)
+				cosIsNegative = (randomTheta > 0.25f) && (randomTheta < 0.75f); // value becomes negative if 0.25 < random theta < 0.75 (angles >= Pi radians) - avoids control divergence
+				cosNegator = (uint8_t)!cosIsNegative - (uint8_t)cosIsNegative;
+				sinLUTInterpolatedCosVal = cosNegator * (sinLUTFloatCosOffset * sinLUTCeilCosVal + (1.0f - sinLUTFloatCosOffset) * sinLUTFloorCosVal) / 2;	// calculate Sine LUT interpolated value (Cosine)
+				randomSamplePixelX = targetPixelX + randomRadius * sinLUTInterpolatedCosVal;	// compute random pixel abscissa
+
+				if (randomSamplePixelX >= 0 && randomSamplePixelX < imageWidth && randomSamplePixelY >= 0 && randomSamplePixelY < imageHeight) {	// if random pixel is within image
+					randomSampleImagePixelIdx = (imageWidth * randomSamplePixelY + randomSamplePixelX) * imageChannels;	// get random sample pixel index in image
+					for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+						randomSampleImagePixelChannelIdx = randomSampleImagePixelIdx + channelIdx;	// get random sample pixel channel index
+						samplePixel[channelIdx] = inputImage[randomSampleImagePixelChannelIdx];
+						if (samplePixel[channelIdx] < Emin[channelIdx])			// if random sample pixel channel value is less than Emin at that channel
+							Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
+						else if (samplePixel[channelIdx] > Emax[channelIdx])	// if random sample pixel channel value is greater than Emax at that channel
+							Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
+					}
+					randomSamplePixelIdx++;	// advance random sample pixel index
+				}
+			}
+
+			dotProd = 0;
+			ElenSq = 0;
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				Edelta = Emax[channelIdx] - Emin[channelIdx];
+				dotProd += Edelta * (targetPixel[channelIdx] - Emin[channelIdx]);
+				ElenSq += Edelta * Edelta;
+			}
+
+			// calculate g = (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+			outputPixel += dotProd * 255.0 / ElenSq;
+		}
+		outputImage[idx] = outputPixel / numOfIterations;
+		state[idx] = localState;	// store updated random number generator state back into global memory
+	}
+}
+#endif
+
+#if defined(ENABLE_STRESS_C2G_GPU_3)
+// This version of the function is a hybrid between the first two approaches. It uses pre-computed sprays similarly to the first approach.
+// However, for any pixel, if any sample point in its chosen pre-computed spray is found to be lying outside the image, it is replaced with
+// randomly chosen sample points lying within the image. This should solve the issue of the first approach while not being as slow as the second approach,
+// particularly for pixels not close to the edges of the image, since the likelihood of a sample point not lying within the image for those diminishes greatly.
+__global__ void STRESSColorToGrayscaleKernel3(curandState *state, uint8_t *outputImage, uint8_t *inputImage, short int *spraysX, short int *spraysY, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int numOfSprays, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
+	unsigned int targetPixelX = blockDim.x * blockIdx.x + threadIdx.x; // target pixel abscissa
+	unsigned int targetPixelY = blockDim.y * blockIdx.y + threadIdx.y; // target pixel ordinate
+
+	if (targetPixelX < imageWidth && targetPixelY < imageHeight) {	// if target pixel is within image
+		unsigned int idx = imageWidth * targetPixelY + targetPixelX;	// thread / output pixel absolute index
+		curandState localState = state[idx];	// load random number generator state from global memory
+
+		int samplePixelX;	// sample pixel abscissa
+		int samplePixelY;	// sample pixel ordinate
+		unsigned int sampleIdx;	// sample index from spray
+		unsigned int sampleImagePixelIdx;	// sample pixel absolute index in image
+		unsigned int sampleImagePixelChannelIdx;	// sample pixel channel index
+		unsigned int numOfValidSamplePoints;	// number of valid sample points in envelope
+
+		float randomRadius;		// random radius
+		float randomTheta;		// random angle (normalized)
+		const float circle = 2 * M_PI; // 2Pi
+		/*float alpha;			// angle restricted to <= Pi/2 radians (normalized)
+
+		float sinLUTFloatSinIdx;	// Sine LUT float index (Sine, for linear interpolation)
+		float sinLUTFloatCosIdx;	// Sine LUT float index (Cosine, for linear interpolation)
+		float sinLUTFloatSinOffset;	// Sine LUT float offset from floor index (Sine, for linear interpolation)
+		float sinLUTFloatCosOffset;	// Sine LUT float offset from floor index (Cosine, for linear interpolation)
+		unsigned int sinLUTFloorSinValIdx;		// Sine LUT floor value index (Sine)
+		unsigned int sinLUTFloorCosValIdx;		// Sine LUT floor value index (Cosine)
+		float sinLUTFloorSinVal;	// Sine LUT floor value for particular theta (Sine, for linear interpolation)
+		float sinLUTFloorCosVal;	// Sine LUT floor value for particular theta (Cosine, for linear interpolation)
+		float sinLUTCeilSinVal;	// Sine LUT ceil value for particular theta (Sine, for linear interpolation)
+		float sinLUTCeilCosVal;	// Sine LUT ceil value for particular theta (Sine, for linear interpolation)
+		float sinLUTInterpolatedSinVal;	// Sine LUT interpolated value (Sine)
+		float sinLUTInterpolatedCosVal;	// Sine LUT interpolated value (Cosine)
+		bool sinIsNegative;		// Sine is negative flag
+		bool cosIsNegative;		// Cosine is negative flag
+		uint8_t sinNegator;		// Sine negator
+		uint8_t cosNegator;		// Cosine negator*/
+
+		int randomSamplePixelX;	// random sample pixel abscissa
+		int randomSamplePixelY;	// random sample pixel ordinate
+		unsigned int randomSamplePixelIdx;	// random sample pixel index
+		unsigned int randomSampleImagePixelIdx;	// random sample pixel absolute index in image
+		unsigned int randomSampleImagePixelChannelIdx;	// random sample pixel channel index
+
+		float sinVal;	// sine value
+		float cosVal;	// cosine value
+
+		unsigned int targetPixelIdx = idx * imageChannels;	// target pixel (p) absolute index
+		unsigned int targetPixelChannelIdx;		// target pixel channel absolute index
+		uint8_t targetPixel[3]; // target pixel array for channels
+		uint8_t samplePixel[3];	// sample pixel array for channels
+		double outputPixel;		// output pixel values accumulator across iterations
+		uint8_t channelIdx;		// channel index
+
+		uint8_t Emin[3];	// Emin array of size imageChannels
+		uint8_t Emax[3];	// Emax array of size imageChannels
+
+		// for calculating (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+		uint8_t Edelta;
+		unsigned int dotProd, ElenSq;
+
+		unsigned int sprayIdx; // spray index
+		unsigned int spraySampleStartIdx; // spray sample start index
+		unsigned int spraySampleIdx; // spray sample absolute index
+
+		// initialize output pixel values accumulator to 0
+		outputPixel = 0.0f;
+
+		// iteration loop
+		for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+			// load target pixel and set Emin and Emax equal to target pixel value at each channel
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				targetPixelChannelIdx = targetPixelIdx + channelIdx;
+				Emin[channelIdx] = Emax[channelIdx] = targetPixel[channelIdx] = inputImage[targetPixelChannelIdx];
+			}
+
+			// get random sample points from spray and calculate envelope
+			numOfValidSamplePoints = 0;	// reset number of valid sample points to 0
+			sprayIdx = curand_uniform(&localState) * numOfSprays;	// choose spray at random from pre-computed sprays
+			spraySampleStartIdx = numOfSamplePoints * sprayIdx;	// calculate spray sample start index
+			for (sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
+				spraySampleIdx = spraySampleStartIdx + sampleIdx;
+				samplePixelX = targetPixelX + spraysX[spraySampleIdx];	// compute sample pixel abscissa
+				samplePixelY = targetPixelY + spraysY[spraySampleIdx];	// compute sample pixel ordinate
+				if (samplePixelX >= 0 && samplePixelX < imageWidth && samplePixelY >= 0 && samplePixelY < imageHeight) {	// if sample pixel is within image
+					sampleImagePixelIdx = (imageWidth * samplePixelY + samplePixelX) * imageChannels;	// get sample pixel index in image
+					for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+						sampleImagePixelChannelIdx = sampleImagePixelIdx + channelIdx;	// get sample pixel channel index
+						samplePixel[channelIdx] = inputImage[sampleImagePixelChannelIdx];
+						if (samplePixel[channelIdx] < Emin[channelIdx])			// if sample pixel channel value is less than Emin at that channel
+							Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
+						else if (samplePixel[channelIdx] > Emax[channelIdx])	// if sample pixel channel value is greater than Emax at that channel
+							Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
+					}
+					numOfValidSamplePoints++;
+				}
+			}
+
+			// generate sample points to compensate for invalid sample points
+			sampleIdx = numOfValidSamplePoints;
+			while (sampleIdx < numOfSamplePoints) {
+				randomRadius = curand_uniform(&localState) * radius; // get a random distance from the uniform real distribution
+				randomTheta = curand_uniform(&localState) * circle; // get a random angle from the uniform real distribution
+				sincosf(randomTheta, &sinVal, &cosVal);
+				randomSamplePixelX = targetPixelX + randomRadius * cosVal;	// compute random pixel abscissa
+				randomSamplePixelY = targetPixelY + randomRadius * sinVal;	// compute random pixel ordinate
+				if (randomSamplePixelX >= 0 && randomSamplePixelX < imageWidth && randomSamplePixelY >= 0 && randomSamplePixelY < imageHeight) {	// if random pixel is within image
+					randomSampleImagePixelIdx = (imageWidth * randomSamplePixelY + randomSamplePixelX) * imageChannels;	// get random sample pixel index in image
+					for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+						randomSampleImagePixelChannelIdx = randomSampleImagePixelIdx + channelIdx;	// get random sample pixel channel index
+						samplePixel[channelIdx] = inputImage[randomSampleImagePixelChannelIdx];
+						if (samplePixel[channelIdx] < Emin[channelIdx])			// if random sample pixel channel value is less than Emin at that channel
+							Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
+						else if (samplePixel[channelIdx] > Emax[channelIdx])	// if random sample pixel channel value is greater than Emax at that channel
+							Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
+					}
+					sampleIdx++;	// advance random sample pixel index
 				}
 			}
 
@@ -1034,7 +1427,15 @@ int main(int argc, char *argv[])
 	#endif
 	#elif defined(ENABLE_STRESS_C2G_GPU_2B)
 	float *sinLUT = (float*)malloc(sinLUTLength * sizeof(float));
-	const float lambda = M_PI / (sinLUTLength / 2); // calculate lambda
+	const float lambda = M_PI / (sinLUTLength / 2); // angle moves from 0 to 2Pi radians - calculate lambda
+	float theta;
+	for (unsigned int sinLUTIdx; sinLUTIdx < sinLUTLength; sinLUTIdx++) {
+		theta = lambda * sinLUTIdx;
+		sinLUT[sinLUTIdx] = sin(theta);
+	}
+	#elif defined(ENABLE_STRESS_C2G_GPU_2D)
+	float *sinLUT = (float*)malloc(sinLUTLength * sizeof(float));
+	const float lambda = M_PI / (sinLUTLength * 2); // angle moves from 0 to Pi/2 radians - calculate lambda
 	float theta;
 	for (unsigned int sinLUTIdx; sinLUTIdx < sinLUTLength; sinLUTIdx++) {
 		theta = lambda * sinLUTIdx;
@@ -1050,13 +1451,13 @@ int main(int argc, char *argv[])
 	}
 	uint8_t *grayscaleOutputImageData = (uint8_t*)malloc(grayscaleInputImage.cols * grayscaleInputImage.rows * sizeof(uint8_t));
 	#endif
-	#if defined(ENABLE_STRESS_C2C_CPU_3) || defined(ENABLE_STRESS_C2G_CPU_3) || defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_3)
+	#if defined(ENABLE_STRESS_C2C_CPU_3) || defined(ENABLE_STRESS_C2G_CPU_3) || defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
 	cv::Mat colorInputImage = cv::imread(imageName, CV_LOAD_IMAGE_COLOR);
 	#endif
 	#if defined(ENABLE_STRESS_C2C_CPU_3)
 	unsigned int colorImageSize = colorInputImage.cols * colorInputImage.rows * colorInputImage.channels();
 	uint8_t *colorOutputImageData = (uint8_t*)malloc(colorImageSize * sizeof(uint8_t));
-	#elif defined(ENABLE_STRESS_C2G_CPU_3) || defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_3)
+	#elif defined(ENABLE_STRESS_C2G_CPU_3) || defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
 	uint8_t *grayscaleOutputImageData = (uint8_t*)malloc(colorInputImage.cols * colorInputImage.rows * sizeof(uint8_t));
 	#endif
 
@@ -1099,7 +1500,7 @@ int main(int argc, char *argv[])
 	STRESSColorToGrayscaleCPU3(grayscaleOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
 	double STRESSC2GCPU3Duration = (clock() - STRESSC2GCPU3Clock) / (double)CLOCKS_PER_SEC;
 	printf("Finished STRESSColorToGrayscaleCPU3 in %fs, dumping to disk ...\n", STRESSC2GCPU3Duration);
-	cv::Mat C2GOutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC1, C2GOutputImageData);
+	cv::Mat C2GOutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC1, grayscaleOutputImageData);
 	sprintf(imageName, "outC2GCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
 	cv::imwrite(imageName, C2GOutputImageCPU3);
 	#endif
@@ -1115,7 +1516,7 @@ int main(int argc, char *argv[])
 	cv::imwrite(imageName, C2COutputImageCPU3);
 	#endif
 	
-	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_3)
+	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
 	printf("Running STRESSC2GKernel (R=%i, M=%i, N=%i, S=%i, SS=%i, SL=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays, numOfSharedSprays, sinLUTLength);
 	unsigned long seed = time(NULL);
 	#if defined(ENABLE_STRESS_C2G_GPU_1)
@@ -1124,10 +1525,12 @@ int main(int argc, char *argv[])
 	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, spraysX, spraysY, numOfSharedSprays, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), radius, numOfSamplePoints, numOfSprays, numOfIterations, seed);
 	#elif defined(ENABLE_STRESS_C2G_GPU_2)
 	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), radius, numOfSamplePoints, numOfIterations, seed);
-	#elif defined(ENABLE_STRESS_C2G_GPU_2B)
+	#elif defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
 	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, sinLUT, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), sinLUTLength, radius, numOfSamplePoints, numOfIterations, seed);
+	#elif defined(ENABLE_STRESS_C2G_GPU_2C)
+	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), sinLUTLength, radius, numOfSamplePoints, numOfIterations, seed);
 	#elif defined(ENABLE_STRESS_C2G_GPU_3)
-	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(C2GOutputImageData, colorInputImage.data, spraysX, spraysY, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), radius, numOfSamplePoints, numOfSprays, numOfIterations, seed);
+	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, spraysX, spraysY, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), radius, numOfSamplePoints, numOfSprays, numOfIterations, seed);
 	#endif
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "STRESSC2GKernelHelper failed!");
@@ -1152,7 +1555,7 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined (ENABLE_STRESS_C2G_GPU_2) || defined (ENABLE_STRESS_C2G_GPU_2B) || defined (ENABLE_STRESS_C2G_GPU_3)
+#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined (ENABLE_STRESS_C2G_GPU_2) || defined (ENABLE_STRESS_C2G_GPU_2B) || defined (ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined (ENABLE_STRESS_C2G_GPU_3)
 // CUDA helper function
 #if defined(ENABLE_STRESS_C2G_GPU_1)
 cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, short int **spraysX, short int **spraysY, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed)
@@ -1160,10 +1563,12 @@ cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *in
 cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, short int **spraysX, short int **spraysY, const unsigned int numOfSharedSprays, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed)
 #elif defined(ENABLE_STRESS_C2G_GPU_2)
 cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed)
-#elif defined(ENABLE_STRESS_C2G_GPU_2B)
+#elif defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
 cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, float *sinLUT, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed)
+#elif defined(ENABLE_STRESS_C2G_GPU_2C)
+cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed)
 #elif defined(ENABLE_STRESS_C2G_GPU_3)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, short int **spraysX, short int **spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed)
+cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, short int **spraysX, short int **spraysY, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed)
 #endif
 {
 	GpuTimer cudaMallocInputTimer;
@@ -1173,11 +1578,11 @@ cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *in
 	GpuTimer cudaMallocSpraysTimer;
 	GpuTimer cudaMemcpySpraysTimer;
 	#endif
-	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined (ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_3)
+	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined (ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
 	GpuTimer cudaMallocCurandStatesTimer;
 	GpuTimer cudaSetupRandomKernelTimer;
 	#endif
-	#if defined(ENABLE_STRESS_C2G_GPU_2B)
+	#if defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
 	GpuTimer cudaMallocSinLUTTimer;
 	GpuTimer cudaMemcpySinLUTTimer;
 	#endif
@@ -1221,7 +1626,7 @@ cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *in
 	unsigned int gridDimY = (imageHeight - 1) / BLOCK_WIDTH + 1;
 	dim3 dimGrid(gridDimX, gridDimY, 1);
 
-	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_3)
+	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
 	// Allocate random number generator states
 	//unsigned int numOfThreads = gridDimX * gridDimY * BLOCK_WIDTH * BLOCK_WIDTH;
 	curandState *d_CURANDStates;
@@ -1257,43 +1662,6 @@ cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *in
 	#endif
 
 	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_3)
-	// Allocate pre-computed random sprays
-	// Thanks to https://stackoverflow.com/questions/23609770/cuda-double-pointer-memory-copy, Marco13's answer
-	/*short int **d_spraysX;
-	short int **d_spraysY;
-	cudaMallocSpraysTimer.Start();
-	cudaMalloc((void**)&d_spraysX, numOfSprays * sizeof(short int*));
-	cudaMalloc((void**)&d_spraysY, numOfSprays * sizeof(short int*));
-	for (unsigned int sprayIdx = 0; sprayIdx < numOfSprays; sprayIdx++) {
-		cudaMalloc((void**)&spraysX[sprayIdx], numOfSamplePoints * sizeof(short int));
-		cudaMalloc((void**)&spraysY[sprayIdx], numOfSamplePoints * sizeof(short int));
-	}
-	cudaMallocSpraysTimer.Stop();
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc (pre-computed random sprays) failed!");
-		goto Error;
-	}
-	printf("Time to allocate pre-computed random sprays:\t\t\t%f ms\n", cudaMallocSpraysTimer.Elapsed());
-
-	// Copy pre-computed random sprays to GPU buffers.
-	cudaMemcpySpraysTimer.Start();
-	cudaMemcpy(d_spraysX, spraysX, numOfSprays * sizeof(short int*), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_spraysY, spraysY, numOfSprays * sizeof(short int*), cudaMemcpyHostToDevice);
-	//for (unsigned int sprayIdx = 0; sprayIdx < numOfSprays; sprayIdx++) {
-	//	cudaMemcpy(d_spraysX[sprayIdx], spraysX[sprayIdx], numOfSamplePoints * sizeof(short int), cudaMemcpyHostToDevice);
-	//	cudaMemcpy(d_spraysY[sprayIdx], spraysY[sprayIdx], numOfSamplePoints * sizeof(short int), cudaMemcpyHostToDevice);
-	//}
-	cudaMemcpySpraysTimer.Stop();
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy (pre-computed random sprays, host -> device) failed!");
-		goto Error;
-	}
-	printf("Time to copy pre-computed random sprays from host to device:\t\t\t%f ms\n", cudaMemcpySpraysTimer.Elapsed());*/
-
-
-
 	short int *d_spraysX;
 	short int *d_spraysY;
 	cudaMallocSpraysTimer.Start();
@@ -1329,7 +1697,7 @@ cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *in
 	printf("Time to copy pre-computed random sprays from host to device:\t\t\t%f ms\n", cudaMemcpySpraysTimer.Elapsed());
 	#endif
 
-	#if defined(ENABLE_STRESS_C2G_GPU_2B)
+	#if defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
 	// Allocate Sine LUT
 	float *d_SinLUT;
 	cudaMallocSinLUTTimer.Start();
@@ -1375,14 +1743,20 @@ cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *in
 	#elif defined(ENABLE_STRESS_C2G_GPU_2)
 	cudaSTRESSColorToGrayscaleKernelTimer.Start();
     STRESSColorToGrayscaleKernel2<<<dimGrid, dimBlock>>>(d_CURANDStates, d_OutputImage, d_InputImage, imageWidth, imageHeight, imageChannels, radius, numOfSamplePoints, numOfIterations);
-	#elif defined(ENABLE_STRESS_C2G_GPU_2B)
+	#elif defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D)
 	size_t numOfBytesDynamicSharedMemory = sinLUTLength * sizeof(float);
 	printf("Dynamic: %i\n", numOfBytesDynamicSharedMemory);
 	cudaSTRESSColorToGrayscaleKernelTimer.Start();
+	#if defined(ENABLE_STRESS_C2G_GPU_2B)
 	STRESSColorToGrayscaleKernel2B << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> >(d_CURANDStates, d_OutputImage, d_InputImage, d_SinLUT, imageWidth, imageHeight, imageChannels, sinLUTLength, radius, numOfSamplePoints, numOfIterations);
+	#elif defined(ENABLE_STRESS_C2G_GPU_2C)
+	STRESSColorToGrayscaleKernel2C << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> >(d_CURANDStates, d_OutputImage, d_InputImage, imageWidth, imageHeight, imageChannels, sinLUTLength, radius, numOfSamplePoints, numOfIterations);
+	#elif defined(ENABLE_STRESS_C2G_GPU_2D)
+	STRESSColorToGrayscaleKernel2D << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> >(d_CURANDStates, d_OutputImage, d_InputImage, d_SinLUT, imageWidth, imageHeight, imageChannels, sinLUTLength, radius, numOfSamplePoints, numOfIterations);
+	#endif
 	#elif defined(ENABLE_STRESS_C2G_GPU_3)
 	cudaSTRESSColorToGrayscaleKernelTimer.Start();
-	STRESSColorToGrayscaleKernel3 << <dimGrid, dimBlock >> >(d_CURANDStates, d_OutputImage, d_InputImage, spraysX, spraysY, imageWidth, imageHeight, imageChannels, radius, numOfSamplePoints, numOfIterations);
+	STRESSColorToGrayscaleKernel3 << <dimGrid, dimBlock >> >(d_CURANDStates, d_OutputImage, d_InputImage, d_spraysX, d_spraysY, imageWidth, imageHeight, imageChannels, numOfSprays, radius, numOfSamplePoints, numOfIterations);
 	#endif
 	cudaSTRESSColorToGrayscaleKernelTimer.Stop();
 
