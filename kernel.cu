@@ -1714,7 +1714,7 @@ int main(int argc, char *argv[])
 			goto CudaError;
 		}
 		if (verbose)
-			printf("Time to copy input from host to device: %f ms\n", cudaMemcpyInputTimer.Elapsed());
+			printf("Time to copy input image from host to device: %f ms\n", cudaMemcpyInputTimer.Elapsed());
 
 		if (numOfSprays > 0) {
 			// Copy pre-computed random sprays from host memory to GPU buffers.
@@ -1881,7 +1881,7 @@ int main(int argc, char *argv[])
 			goto CudaError;
 		}
 		if (verbose)
-			printf("Time to copy output from device to host: %f ms\n", cudaMemcpyOutputTimer.Elapsed());
+			printf("Time to copy output image from device to host: %f ms\n", cudaMemcpyOutputTimer.Elapsed());
 
 		if (verbose)
 			printf("Saving output image to disk ...\n");
