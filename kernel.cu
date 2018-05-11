@@ -20,21 +20,14 @@
 #include <curand_kernel.h>
 
 #include "GpuTimer.h"
+#include "tclap/CmdLine.h"
 #include "config.h"
 
-#if defined(ENABLE_STRESS_C2G_GPU_1)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, short int **spraysX, short int **spraysY, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed);
-#elif defined(ENABLE_STRESS_C2G_GPU_1B)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, short int **spraysX, short int **spraysY, const unsigned int numOfSharedSprays, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed);
-#elif defined(ENABLE_STRESS_C2G_GPU_2)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *grayscaleOutputImage, uint8_t *colorInputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed);
-#elif defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *grayscaleOutputImage, uint8_t *colorInputImage, float *sinLUT, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed);
-#elif defined(ENABLE_STRESS_C2G_GPU_2C)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *grayscaleOutputImage, uint8_t *colorInputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed);
-#elif defined(ENABLE_STRESS_C2G_GPU_3)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *grayscaleOutputImage, uint8_t *colorInputImage, short int **spraysX, short int **spraysY, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed);
-#endif
+#define IMAGE_MODE_GRAYSCALE 0
+#define IMAGE_MODE_RGB 1
+
+#define DEVICE_CPU 0
+#define DEVICE_GPU 1
 
 void computeRandomSpraysCPU(short int ***spraysX, short int ***spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays) {
 	const unsigned int width = 2 * radius + 1;
@@ -113,7 +106,6 @@ cv::Mat generateRandomSprayImage(short int *sprayX, short int *sprayY, const uns
 	return sprayImage;
 }
 
-#if defined(ENABLE_STRESS_G2G_CPU_1)
 // This version of the function uses pre-computed random sprays. It chooses, in each iteration, for each pixel, a random spray at random out of the available sprays.
 // This introduces an issue whereby pixels closer to the edge of the image in particular face reduced sampling due to many sample points lying outside the image and
 // thus not being factored into calculating the envelope. The issue manifests itself particularly when more iterations are used.
@@ -179,9 +171,7 @@ void STRESSGrayscaleToGrayscaleCPU1(uint8_t *outputImage, uint8_t *inputImage, c
 		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_G2G_CPU_2)
 // This version of the function does not use pre-computed random sprays. Instead, it generates, in each iteration, for each pixel in the image, a random spray for that pixel.
 // This solves the issue of reduced sampling seen in the first version of the function. However, this approach is much slower than using pre-computed sprays
 void STRESSGrayscaleToGrayscaleCPU2(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
@@ -249,9 +239,7 @@ void STRESSGrayscaleToGrayscaleCPU2(uint8_t *outputImage, uint8_t *inputImage, c
 		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_G2G_CPU_3)
 // This version of the function is a hybrid between the first two approaches. It uses pre-computed sprays similarly to the first approach.
 // However, for any pixel, if any sample point in its chosen pre-computed spray is found to be lying outside the image, it is replaced with
 // randomly chosen sample points lying within the image. This should solve the issue of the first approach while not being as slow as the second approach,
@@ -346,9 +334,7 @@ void STRESSGrayscaleToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, c
 		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2G_CPU_3)
 // This version of the function is a hybrid between the first two approaches. It uses pre-computed sprays similarly to the first approach.
 // However, for any pixel, if any sample point in its chosen pre-computed spray is found to be lying outside the image, it is replaced with
 // randomly chosen sample points lying within the image. This should solve the issue of the first approach while not being as slow as the second approach,
@@ -469,9 +455,7 @@ void STRESSColorToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, const
 		outputImage[pixelIdx1] = tempOutputImage[pixelIdx1] / numOfIterations;
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2C_CPU_3)
 void STRESSColorToColorCPU3(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, short int **spraysX, short int **spraysY, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations) {
 	float randomRadius;													// random radius
 	float randomTheta;													// random theta
@@ -575,9 +559,7 @@ void STRESSColorToColorCPU3(uint8_t *outputImage, uint8_t *inputImage, const uns
 		outputImage[pixelIdx] = tempOutputImage[pixelIdx] / numOfIterations;
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
 // thanks to http://aresio.blogspot.com/2011/05/cuda-random-numbers-inside-kernels.html
 // and to https://hpc.oit.uci.edu/nvidia-doc/sdk-cuda-doc/CUDALibraries/doc/CURAND_Library.pdf
 __global__ void setupRandomKernel(curandState *state, const unsigned long long seed, const unsigned short int imageWidth, const unsigned short int imageHeight) {
@@ -592,9 +574,7 @@ __global__ void setupRandomKernel(curandState *state, const unsigned long long s
 		curand_init(seed + idx, 0, 0, &state[idx]);	// initialize random number generator state in global memory
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2G_GPU_1)
 // uses pre-computed random sprays loaded per each thread from global memory
 __global__ void STRESSColorToGrayscaleKernel1(curandState *state, uint8_t *outputImage, uint8_t *inputImage, short int *spraysX, short int *spraysY, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int numOfSprays, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
 	unsigned int targetPixelX = blockDim.x * blockIdx.x + threadIdx.x; // target pixel abscissa
@@ -674,9 +654,7 @@ __global__ void STRESSColorToGrayscaleKernel1(curandState *state, uint8_t *outpu
 		state[idx] = localState;	// store updated random number generator state back into global memory
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2G_GPU_1B)
 // uses pre-computed random sprays loaded from global memory into shared memory as far 
 // as shared memory size allows. Loading the sprays into shared memory would allow threads
 // in a thread block to share and reuse sprays, reducing global memory bandwidth requirements.
@@ -791,9 +769,7 @@ __global__ void STRESSColorToGrayscaleKernel1B(curandState *state, uint8_t *outp
 		state[idx] = localState;	// store updated random number generator state back into global memory
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2G_GPU_2)
 // Does not use pre-computed random sprays. Instead, it generates, in each iteration, for each pixel in the image, a random spray for that pixel.
 // This solves the issue of reduced sampling seen in the first version of the function. However, this approach is much slower than using pre-computed sprays
 __global__ void STRESSColorToGrayscaleKernel2(curandState *state, uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
@@ -878,10 +854,8 @@ __global__ void STRESSColorToGrayscaleKernel2(curandState *state, uint8_t *outpu
 		state[idx] = localState;	// store updated random number generator state back into global memory
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2G_GPU_2B)
-// similar to previous approach but replaces sin and cos computations with a LUT. This LUT contains
+// Similar to previous approach but replaces sin and cos computations with a LUT. This LUT contains
 // float values of sin from 0 to 2Pi in lambda increments and is of size sinLUTLength. Linear interpolation
 // is performed since random theta usually falls in-between the angles of a pre-computed sin value pair.
 // Make sure to always load a Sine LUT which size is a multiple of 4 so that Sine and Cosine are aligned at exactly Pi / 4 radians.
@@ -996,9 +970,7 @@ __global__ void STRESSColorToGrayscaleKernel2B(curandState *state, uint8_t *outp
 		state[idx] = localState;	// store updated random number generator state back into global memory
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2G_GPU_2C)
 // similar to previous approach but calculates Sine LUT in thread block instead of loading from global memory
 __global__ void STRESSColorToGrayscaleKernel2C(curandState *state, uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
 	extern __shared__ float sharedSinLUT[];
@@ -1115,9 +1087,7 @@ __global__ void STRESSColorToGrayscaleKernel2C(curandState *state, uint8_t *outp
 		state[idx] = localState;	// store updated random number generator state back into global memory
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2G_GPU_2D)
 // similar to B but loads a Sine LUT that is 4 times smaller for the same precision or
 // 4 times more precise for the same size since it only includes angles <= Pi/2 radians.
 // This approach thus maps all angles to <= Pi/2 radians.
@@ -1248,9 +1218,7 @@ __global__ void STRESSColorToGrayscaleKernel2D(curandState *state, uint8_t *outp
 		state[idx] = localState;	// store updated random number generator state back into global memory
 	}
 }
-#endif
 
-#if defined(ENABLE_STRESS_C2G_GPU_3)
 // This version of the function is a hybrid between the first two approaches. It uses pre-computed sprays similarly to the first approach.
 // However, for any pixel, if any sample point in its chosen pre-computed spray is found to be lying outside the image, it is replaced with
 // randomly chosen sample points lying within the image. This should solve the issue of the first approach while not being as slow as the second approach,
@@ -1389,422 +1357,568 @@ __global__ void STRESSColorToGrayscaleKernel3(curandState *state, uint8_t *outpu
 		state[idx] = localState;	// store updated random number generator state back into global memory
 	}
 }
-#endif
 
 int main(int argc, char *argv[])
 {
-	if (argc != 8) {
-		fprintf(stderr, "Invalid number of arguments.");
+	std::string inputImageFilepath;
+	std::string outputImageFilepath;
+	uint8_t inputImageMode;
+	uint8_t outputImageMode;
+	uint8_t device;
+	unsigned short int radius;
+	unsigned int numOfSamplePoints;
+	unsigned int numOfIterations;
+	unsigned int numOfSprays;
+	unsigned int numOfSharedSprays;
+	bool useSpraysExclusively;
+	bool dumpSpraysToDisk;
+	bool computeSinLUTOnGPU;
+	unsigned int sinLUTLength;
+	bool compressSinLUT;
+	bool verbose;
+
+	// thanks to http://tclap.sourceforge.net/manual.html
+	try {
+		TCLAP::CmdLine cmd("Runs the STRESS algorithm of your choice.", ' ', "0.1");
+		TCLAP::ValueArg<std::string> inputImageFilepathArg("i", "input", "Input image filepath", true, "", "string");
+		TCLAP::ValueArg<std::string> outputImageFilepathArg("o", "output", "Output image filepath", true, "", "string");
+		TCLAP::ValueArg<short int> inputImageModeArg("I", "input-mode", "Input image color mode (Grayscale=0, RGB=1, default=RGB)", false, 1, "int");
+		TCLAP::ValueArg<short int> outputImageModeArg("O", "output-mode", "Output image color mode (Grayscale=0, RGB=1, default=Grayscale)", false, 0, "int");
+		TCLAP::ValueArg<short int> deviceArg("d", "device", "Device selection (CPU=0, GPU=1)", "", 1, "int");
+		TCLAP::ValueArg<unsigned short int> radiusArg("r", "radius", "Radius", true, 0, "int");
+		TCLAP::ValueArg<unsigned int> numOfSamplePointsArg("m", "samples", "Number of sample points", true, 0, "int");
+		TCLAP::ValueArg<unsigned int> numOfIterationsArg("n", "iterations", "Number of iterations", true, 0, "int");
+		TCLAP::ValueArg<unsigned int> numOfSpraysArg("p", "sprays", "Number of pre-computed random sprays", false, 0, "int");
+		TCLAP::ValueArg<unsigned int> numOfSharedSpraysArg("s", "shared-sprays", "Number of pre-computed random sprays per thread block loaded into shared memory", false, 0, "int");
+		TCLAP::SwitchArg useSpraysExclusivelyArg("P", "use-sprays-exclusively", "Use pre-computed random sprays exclusively", false);
+		TCLAP::SwitchArg dumpSpraysToDiskArg("", "dump-sprays", "Dump pre-computed random sprays to disk", false);
+		TCLAP::ValueArg<unsigned int> sinLUTLengthArg("l", "sin-lut", "Sine LUT length", false, 0, "int");
+		TCLAP::SwitchArg computeSinLUTOnGPUArg("S", "sin-lut-gpu", "Compute Sine LUT on GPU in each thread block instead of loading from global memory", false);
+		TCLAP::SwitchArg compressSinLUTArg("c", "compress-sin-lut", "Compress Sine LUT table", false);
+		TCLAP::SwitchArg verboseArg("v", "verbose", "Verbose output", false);
+
+		cmd.add(verboseArg);
+		cmd.add(compressSinLUTArg);
+		cmd.add(computeSinLUTOnGPUArg);
+		cmd.add(sinLUTLengthArg);
+		cmd.add(dumpSpraysToDiskArg);
+		cmd.add(useSpraysExclusivelyArg);
+		cmd.add(numOfSharedSpraysArg);
+		cmd.add(numOfSpraysArg);
+		cmd.add(numOfIterationsArg);
+		cmd.add(numOfSamplePointsArg);
+		cmd.add(radiusArg);
+		cmd.add(deviceArg);
+		cmd.add(outputImageModeArg);
+		cmd.add(inputImageModeArg);
+		cmd.add(outputImageFilepathArg);
+		cmd.add(inputImageFilepathArg);
+
+		cmd.parse(argc, argv);
+
+		inputImageFilepath = inputImageFilepathArg.getValue();
+		outputImageFilepath = outputImageFilepathArg.getValue();
+		inputImageMode = inputImageModeArg.getValue();
+		assert(inputImageMode == 0 || inputImageMode == 1);
+		outputImageMode = outputImageModeArg.getValue();
+		assert(outputImageMode == 0 || outputImageMode == 1);
+		device = deviceArg.getValue();
+		assert(device == 0 || device == 1);
+		radius = radiusArg.getValue();
+		numOfSamplePoints = numOfSamplePointsArg.getValue();
+		numOfIterations = numOfIterationsArg.getValue();
+		numOfSprays = numOfSpraysArg.getValue();
+		numOfSharedSprays = numOfSharedSpraysArg.getValue();
+		useSpraysExclusively = useSpraysExclusivelyArg.getValue();
+		dumpSpraysToDisk = dumpSpraysToDiskArg.getValue();
+		sinLUTLength = sinLUTLengthArg.getValue();
+		computeSinLUTOnGPU = computeSinLUTOnGPUArg.getValue();
+		compressSinLUT = compressSinLUTArg.getValue();
+		verbose = verboseArg.getValue();
+	}
+	catch (TCLAP::ArgException &e) {
+		fprintf(stderr, "Error in argument(s): %s", e.what());
 		return 1;
 	}
 
-	srand(time(NULL));
-	const unsigned short int radius = atoi(argv[2]);
-	const unsigned int numOfSamplePoints = atoi(argv[3]);
-	const unsigned int numOfIterations = atoi(argv[4]);
-	const unsigned int numOfSprays = atoi(argv[5]);
-	const unsigned int numOfSharedSprays = atoi(argv[6]);
-	const unsigned int sinLUTLength = atoi(argv[7]);
-	char *imageName = argv[1];
-	char outputImageName[50];
-	#if defined(ENABLE_STRESS_G2G_CPU_1) || defined(ENABLE_STRESS_G2G_CPU_3) || defined(ENABLE_STRESS_C2G_CPU_3) || defined(ENABLE_STRESS_C2C_CPU_3) || defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_3)
 	short int **spraysX;
 	short int **spraysY;
-	clock_t computeRandomSpraysCPUClock = clock();
-	computeRandomSpraysCPU(&spraysX, &spraysY, radius, numOfSamplePoints, numOfSprays);
-	double computeRandomSpraysCPUDuration = (clock() - computeRandomSpraysCPUClock) / (double)CLOCKS_PER_SEC;
 
-	printf("Time to compute random sprays (CPU): %fs\n", computeRandomSpraysCPUDuration);
-	
-	#if defined(WRITE_RANDOM_SPRAYS_TO_DISK)
-	printf("Writing random sprays (%i) to disk ...\n", numOfSprays);
-	char sprayImageName[20];
-	for (unsigned int sprayIdx = 0; sprayIdx < numOfSprays; sprayIdx++) {
-		cv::Mat sprayImage = generateRandomSprayImage(spraysX[sprayIdx], spraysY[sprayIdx], radius, numOfSamplePoints);
-		sprintf(sprayImageName, "spray%i.png", sprayIdx);
-		cv::imwrite(sprayImageName, sprayImage);
-	}
-	#endif
-	#elif defined(ENABLE_STRESS_C2G_GPU_2B)
-	float *sinLUT = (float*)malloc(sinLUTLength * sizeof(float));
-	const float lambda = M_PI / (sinLUTLength / 2); // angle moves from 0 to 2Pi radians - calculate lambda
-	float theta;
-	for (unsigned int sinLUTIdx; sinLUTIdx < sinLUTLength; sinLUTIdx++) {
-		theta = lambda * sinLUTIdx;
-		sinLUT[sinLUTIdx] = sin(theta);
-	}
-	#elif defined(ENABLE_STRESS_C2G_GPU_2D)
-	float *sinLUT = (float*)malloc(sinLUTLength * sizeof(float));
-	const float lambda = M_PI / (sinLUTLength * 2); // angle moves from 0 to Pi/2 radians - calculate lambda
-	float theta;
-	for (unsigned int sinLUTIdx; sinLUTIdx < sinLUTLength; sinLUTIdx++) {
-		theta = lambda * sinLUTIdx;
-		sinLUT[sinLUTIdx] = sin(theta);
-	}
-	#endif
-
-	#if defined(ENABLE_STRESS_G2G_CPU_1) || defined(ENABLE_STRESS_G2G_CPU_2) || defined(ENABLE_STRESS_G2G_CPU_3)
-	cv::Mat grayscaleInputImage = cv::imread(imageName, CV_LOAD_IMAGE_GRAYSCALE);
-	if (grayscaleInputImage.empty()) {
-		fprintf(stderr, "Cannot read grayscale image file %s.", imageName);
-		return 1;
-	}
-	uint8_t *grayscaleOutputImageData = (uint8_t*)malloc(grayscaleInputImage.cols * grayscaleInputImage.rows * sizeof(uint8_t));
-	#endif
-	#if defined(ENABLE_STRESS_C2C_CPU_3) || defined(ENABLE_STRESS_C2G_CPU_3) || defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
-	cv::Mat colorInputImage = cv::imread(imageName, CV_LOAD_IMAGE_COLOR);
-	#endif
-	#if defined(ENABLE_STRESS_C2C_CPU_3)
-	unsigned int colorImageSize = colorInputImage.cols * colorInputImage.rows * colorInputImage.channels();
-	uint8_t *colorOutputImageData = (uint8_t*)malloc(colorImageSize * sizeof(uint8_t));
-	#elif defined(ENABLE_STRESS_C2G_CPU_3) || defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
-	uint8_t *grayscaleOutputImageData = (uint8_t*)malloc(colorInputImage.cols * colorInputImage.rows * sizeof(uint8_t));
-	#endif
-
-	#if defined(ENABLE_STRESS_G2G_CPU_1)
-	printf("Running STRESSGrayscaleToGrayscaleCPU1 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	clock_t STRESSG2GCPU1Clock = clock();
-	STRESSGrayscaleToGrayscaleCPU1(grayscaleOutputImageData, grayscaleInputImage.data, grayscaleInputImage.cols, grayscaleInputImage.rows, spraysX, spraysY, numOfSamplePoints, numOfSprays, numOfIterations);
-	double STRESSG2GCPU1Duration = (clock() - STRESSG2GCPU1Clock) / (double) CLOCKS_PER_SEC;
-	printf("Finished STRESSGrayscaleToGrayscaleCPU1 in %fs, dumping to disk ...\n", STRESSG2GCPU1Duration);
-	cv::Mat G2GOutputImageCPU1(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
-	sprintf(imageName, "outG2GCPU1_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, G2GOutputImageCPU1);
-	#endif
-
-	#if defined(ENABLE_STRESS_G2G_CPU_2)
-	printf("Running STRESSGrayscaleToGrayscaleCPU2 (R=%i, M=%i, N=%i) ...\n", radius, numOfSamplePoints, numOfIterations);
-	clock_t STRESSG2GCPU2Clock = clock();
-	STRESSGrayscaleToGrayscaleCPU2(grayscaleOutputImageData, grayscaleInputImage.data, grayscaleInputImage.cols, grayscaleInputImage.rows, radius, numOfSamplePoints, numOfIterations);
-	double STRESSG2GCPU2Duration = (clock() - STRESSG2GCPU2Clock) / (double)CLOCKS_PER_SEC;
-	printf("Finished STRESSGrayscaleToGrayscaleCPU2 in %fs, dumping to disk ...\n", STRESSG2GCPU2Duration);
-	cv::Mat G2GOutputImageCPU2(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
-	sprintf(imageName, "outG2GCPU2_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, G2GOutputImageCPU2);
-	#endif
-
-	#if defined(ENABLE_STRESS_G2G_CPU_3)
-	printf("Running STRESSGrayscaleToGrayscaleCPU3 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	clock_t STRESSG2GCPU3Clock = clock();
-	STRESSGrayscaleToGrayscaleCPU3(grayscaleOutputImageData, grayscaleInputImage.data, grayscaleInputImage.cols, grayscaleInputImage.rows, spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
-	double STRESSG2GCPU3Duration = (clock() - STRESSG2GCPU3Clock) / (double)CLOCKS_PER_SEC;
-	printf("Finished STRESSGrayscaleToGrayscaleCPU3 in %fs, dumping to disk ...\n", STRESSG2GCPU3Duration);
-	cv::Mat G2GOutputImageCPU3(grayscaleInputImage.rows, grayscaleInputImage.cols, CV_8UC1, grayscaleOutputImageData);
-	sprintf(imageName, "outG2GCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, G2GOutputImageCPU3);
-	#endif
-
-	#if defined(ENABLE_STRESS_C2G_CPU_3)
-	printf("Running STRESSColorToGrayscaleCPU3 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	clock_t STRESSC2GCPU3Clock = clock();
-	STRESSColorToGrayscaleCPU3(grayscaleOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
-	double STRESSC2GCPU3Duration = (clock() - STRESSC2GCPU3Clock) / (double)CLOCKS_PER_SEC;
-	printf("Finished STRESSColorToGrayscaleCPU3 in %fs, dumping to disk ...\n", STRESSC2GCPU3Duration);
-	cv::Mat C2GOutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC1, grayscaleOutputImageData);
-	sprintf(imageName, "outC2GCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, C2GOutputImageCPU3);
-	#endif
-
-	#if defined(ENABLE_STRESS_C2C_CPU_3)
-	printf("Running STRESSColorToColorCPU3 (R=%i, M=%i, N=%i, S=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	clock_t STRESSC2CCPU3Clock = clock();
-	STRESSColorToColorCPU3(colorOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
-	double STRESSC2CCPU3Duration = (clock() - STRESSC2CCPU3Clock) / (double)CLOCKS_PER_SEC;
-	printf("Finished STRESSColorToColorCPU3 in %fs, dumping to disk ...\n", STRESSC2CCPU3Duration);
-	cv::Mat C2COutputImageCPU3(colorInputImage.rows, colorInputImage.cols, CV_8UC3, colorOutputImageData);
-	sprintf(imageName, "outC2CCPU3_R%i_M%i_N%i_S%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays);
-	cv::imwrite(imageName, C2COutputImageCPU3);
-	#endif
-	
-	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
-	printf("Running STRESSC2GKernel (R=%i, M=%i, N=%i, S=%i, SS=%i, SL=%i) ...\n", radius, numOfSamplePoints, numOfIterations, numOfSprays, numOfSharedSprays, sinLUTLength);
-	unsigned long seed = time(NULL);
-	#if defined(ENABLE_STRESS_C2G_GPU_1)
-	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, spraysX, spraysY, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), radius, numOfSamplePoints, numOfSprays, numOfIterations, seed);
-	#elif defined(ENABLE_STRESS_C2G_GPU_1B)
-	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, spraysX, spraysY, numOfSharedSprays, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), radius, numOfSamplePoints, numOfSprays, numOfIterations, seed);
-	#elif defined(ENABLE_STRESS_C2G_GPU_2)
-	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), radius, numOfSamplePoints, numOfIterations, seed);
-	#elif defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
-	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, sinLUT, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), sinLUTLength, radius, numOfSamplePoints, numOfIterations, seed);
-	#elif defined(ENABLE_STRESS_C2G_GPU_2C)
-	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), sinLUTLength, radius, numOfSamplePoints, numOfIterations, seed);
-	#elif defined(ENABLE_STRESS_C2G_GPU_3)
-	cudaError_t cudaStatus = STRESSColorToGrayscaleKernelHelper(grayscaleOutputImageData, colorInputImage.data, spraysX, spraysY, colorInputImage.cols, colorInputImage.rows, colorInputImage.channels(), radius, numOfSamplePoints, numOfSprays, numOfIterations, seed);
-	#endif
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "STRESSC2GKernelHelper failed!");
-        return 1;
-    }
-	printf("Finished STRESSColorToGrayscaleKernel, dumping to disk ...\n");
-	cv::Mat grayscaleOutputImageGPU(colorInputImage.rows, colorInputImage.cols, CV_8UC1, grayscaleOutputImageData);
-	sprintf(outputImageName, "outC2GGPU_R%i_M%i_N%i_S%i_SS%i_SL%i.png", radius, numOfSamplePoints, numOfIterations, numOfSprays, numOfSharedSprays, sinLUTLength);
-	cv::imwrite(outputImageName, grayscaleOutputImageGPU);
-
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceReset failed!");
-        return 1;
-    }
-	#endif
-	//#endif
-
-	system("PAUSE");
-    return 0;
-}
-
-#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined (ENABLE_STRESS_C2G_GPU_2) || defined (ENABLE_STRESS_C2G_GPU_2B) || defined (ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined (ENABLE_STRESS_C2G_GPU_3)
-// CUDA helper function
-#if defined(ENABLE_STRESS_C2G_GPU_1)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, short int **spraysX, short int **spraysY, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed)
-#elif defined(ENABLE_STRESS_C2G_GPU_1B)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, short int **spraysX, short int **spraysY, const unsigned int numOfSharedSprays, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed)
-#elif defined(ENABLE_STRESS_C2G_GPU_2)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed)
-#elif defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, float *sinLUT, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed)
-#elif defined(ENABLE_STRESS_C2G_GPU_2C)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int sinLUTLength, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations, const unsigned long long seed)
-#elif defined(ENABLE_STRESS_C2G_GPU_3)
-cudaError_t STRESSColorToGrayscaleKernelHelper(uint8_t *outputImage, uint8_t *inputImage, short int **spraysX, short int **spraysY, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned short int radius, const unsigned int numOfSamplePoints, const unsigned int numOfSprays, const unsigned int numOfIterations, const unsigned long long seed)
-#endif
-{
-	GpuTimer cudaMallocInputTimer;
-	GpuTimer cudaMallocOutputTimer;
-	GpuTimer cudaMemcpyInputTimer;
-	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_3)
-	GpuTimer cudaMallocSpraysTimer;
-	GpuTimer cudaMemcpySpraysTimer;
-	#endif
-	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined (ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
-	GpuTimer cudaMallocCurandStatesTimer;
-	GpuTimer cudaSetupRandomKernelTimer;
-	#endif
-	#if defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
-	GpuTimer cudaMallocSinLUTTimer;
-	GpuTimer cudaMemcpySinLUTTimer;
-	#endif
-	GpuTimer cudaSTRESSColorToGrayscaleKernelTimer;
-	GpuTimer cudaMemcpyOutputTimer;
-	unsigned int outputImageSize = imageWidth * imageHeight;
-	unsigned int inputImageSize = outputImageSize * imageChannels;
-	cudaError_t cudaStatus;
-
-    // Choose which GPU to run on, change this on a multi-GPU system.
-    cudaStatus = cudaSetDevice(0);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaSetDevice failed! Do you have a CUDA-capable GPU installed?");
-        goto Error;
-    }
-
-	// Allocate GPU buffers for two vectors (one input, one output).
-	uint8_t *d_InputImage;
-	cudaMallocInputTimer.Start();
-    cudaStatus = cudaMalloc((void**)&d_InputImage, inputImageSize * sizeof(uint8_t));
-	cudaMallocInputTimer.Stop();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc (input image) failed!");
-        goto Error;
-    }
-	printf("Time to allocate input:\t\t\t\t\t%f ms\n", cudaMallocInputTimer.Elapsed());
-
-	uint8_t *d_OutputImage;
-	cudaMallocOutputTimer.Start();
-    cudaStatus = cudaMalloc((void**)&d_OutputImage, outputImageSize * sizeof(uint8_t));
-	cudaMallocOutputTimer.Stop();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc (output image) failed!");
-        goto Error;
-    }
-	printf("Time to allocate output:\t\t\t\t%f ms\n", cudaMallocOutputTimer.Elapsed());
-
-	// Declare block and grid dimensions
-	dim3 dimBlock(BLOCK_WIDTH, BLOCK_WIDTH, 1);
-	unsigned int gridDimX = (imageWidth - 1) / BLOCK_WIDTH + 1;
-	unsigned int gridDimY = (imageHeight - 1) / BLOCK_WIDTH + 1;
-	dim3 dimGrid(gridDimX, gridDimY, 1);
-
-	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D) || defined(ENABLE_STRESS_C2G_GPU_3)
-	// Allocate random number generator states
-	//unsigned int numOfThreads = gridDimX * gridDimY * BLOCK_WIDTH * BLOCK_WIDTH;
-	curandState *d_CURANDStates;
-	cudaMallocCurandStatesTimer.Start();
-	cudaStatus = cudaMalloc((void**)&d_CURANDStates, outputImageSize * sizeof(curandState));
-	cudaMallocCurandStatesTimer.Stop();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc (CURAND states) failed!");
-		goto Error;
-	}
-	printf("Time to allocate CURAND states:\t\t\t\t%f ms\n", cudaMallocCurandStatesTimer.Elapsed());
-
-	// Launch the setup random number generator kernel on the GPU with one thread for each element.
-	cudaSetupRandomKernelTimer.Start();
-	setupRandomKernel <<<dimGrid, dimBlock>>>(d_CURANDStates, seed, imageWidth, imageHeight);
-	cudaSetupRandomKernelTimer.Stop();
-
-	// Check for any errors launching the kernel
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "setupRandomKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-
-	// cudaDeviceSynchronize waits for the kernel to finish, and returns
-	// any errors encountered during the launch.
-	cudaStatus = cudaDeviceSynchronize();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching setupRandomKernel!\n", cudaStatus);
-		goto Error;
-	}
-	printf("Time to execute setupRandomKernel kernel:\t\t%f ms\n", cudaSetupRandomKernelTimer.Elapsed());
-	#endif
-
-	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_1B) || defined(ENABLE_STRESS_C2G_GPU_3)
-	short int *d_spraysX;
-	short int *d_spraysY;
-	cudaMallocSpraysTimer.Start();
-	unsigned int spraySampleStartIdx;
-	cudaMalloc((void**)&d_spraysX, numOfSprays * numOfSamplePoints * sizeof(short int));
-	cudaMalloc((void**)&d_spraysY, numOfSprays * numOfSamplePoints * sizeof(short int));
-	cudaMallocSpraysTimer.Stop();
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-	fprintf(stderr, "cudaMalloc (pre-computed random sprays) failed!");
-	goto Error;
-	}
-	printf("Time to allocate pre-computed random sprays:\t\t\t%f ms\n", cudaMallocSpraysTimer.Elapsed());
-
-	// Copy pre-computed random sprays to GPU buffers.
-	short int *allSpraysX = (short int*)malloc(numOfSprays * numOfSamplePoints * sizeof(short int));
-	short int *allSpraysY = (short int*)malloc(numOfSprays * numOfSamplePoints * sizeof(short int));
-	for (unsigned int sprayIdx = 0; sprayIdx < numOfSprays; sprayIdx++) {
-		for (unsigned int sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
-			allSpraysX[numOfSamplePoints * sprayIdx + sampleIdx] = spraysX[sprayIdx][sampleIdx];
-			allSpraysY[numOfSamplePoints * sprayIdx + sampleIdx] = spraysY[sprayIdx][sampleIdx];
+	if (numOfSprays > 0) {
+		srand(time(NULL));
+		clock_t computeRandomSpraysCPUClock;
+		if (verbose)
+			computeRandomSpraysCPUClock = clock();
+		computeRandomSpraysCPU(&spraysX, &spraysY, radius, numOfSamplePoints, numOfSprays);
+		if (verbose) {
+			double computeRandomSpraysCPUDuration = (clock() - computeRandomSpraysCPUClock) / (double)CLOCKS_PER_SEC;
+			printf("Time to compute random sprays (CPU): %fs\n", computeRandomSpraysCPUDuration);
+		}
+		if (dumpSpraysToDisk) {
+			if (verbose)
+				printf("Writing random sprays (%i) to disk ...\n", numOfSprays);
+			char sprayImageName[20];
+			for (unsigned int sprayIdx = 0; sprayIdx < numOfSprays; sprayIdx++) {
+				cv::Mat sprayImage = generateRandomSprayImage(spraysX[sprayIdx], spraysY[sprayIdx], radius, numOfSamplePoints);
+				sprintf(sprayImageName, "spray%05i.png", sprayIdx);
+				cv::imwrite(sprayImageName, sprayImage);
+			}
 		}
 	}
-	cudaMemcpySpraysTimer.Start();
-	cudaMemcpy(d_spraysX, allSpraysX, numOfSprays * numOfSamplePoints * sizeof(short int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_spraysY, allSpraysY, numOfSprays * numOfSamplePoints * sizeof(short int), cudaMemcpyHostToDevice);
-	cudaMemcpySpraysTimer.Stop();
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-	fprintf(stderr, "cudaMemcpy (pre-computed random sprays, host -> device) failed!");
-	goto Error;
-	}
-	printf("Time to copy pre-computed random sprays from host to device:\t\t\t%f ms\n", cudaMemcpySpraysTimer.Elapsed());
-	#endif
-
-	#if defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2D)
-	// Allocate Sine LUT
-	float *d_SinLUT;
-	cudaMallocSinLUTTimer.Start();
-	cudaStatus = cudaMalloc((void**)&d_SinLUT, sinLUTLength * sizeof(float));
-	cudaMallocSinLUTTimer.Stop();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc (Sine LUT) failed!");
-		goto Error;
-	}
-	printf("Time to allocate Sine LUT:\t\t\t\t%f ms\n", cudaMallocSinLUTTimer.Elapsed());
-
-	// Copy sin LUT from host memory to GPU buffers.
-	cudaMemcpySinLUTTimer.Start();
-	cudaStatus = cudaMemcpy(d_SinLUT, sinLUT, sinLUTLength * sizeof(float), cudaMemcpyHostToDevice);
-	cudaMemcpySinLUTTimer.Stop();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy (Sine LUT, host -> device) failed!");
-		goto Error;
-	}
-	printf("Time to copy Sine LUT from host to device:\t\t\t%f ms\n", cudaMemcpySinLUTTimer.Elapsed());
-	#endif
-
-	// Copy input vectors from host memory to GPU buffers.
-	cudaMemcpyInputTimer.Start();
-	cudaStatus = cudaMemcpy(d_InputImage, inputImage, inputImageSize * sizeof(uint8_t), cudaMemcpyHostToDevice);
-	cudaMemcpyInputTimer.Stop();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy (host -> device) failed!");
-		goto Error;
-	}
-	printf("Time to copy input from host to device:\t\t\t%f ms\n", cudaMemcpyInputTimer.Elapsed());
-
-	// Launch the STRESS color to grayscale kernel on the GPU with one thread for each element.
-	#if defined(ENABLE_STRESS_C2G_GPU_1)
-	cudaSTRESSColorToGrayscaleKernelTimer.Start();
-	STRESSColorToGrayscaleKernel1 << <dimGrid, dimBlock>> >(d_CURANDStates, d_OutputImage, d_InputImage, d_spraysX, d_spraysY, imageWidth, imageHeight, imageChannels, numOfSprays, radius, numOfSamplePoints, numOfIterations);
-	#elif defined(ENABLE_STRESS_C2G_GPU_1B)
-	// thanks to https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#execution-configuration
-	size_t numOfBytesDynamicSharedMemory = numOfSharedSprays * numOfSamplePoints * 2 * sizeof(short int);
-	printf("Dynamic: %i\n", numOfBytesDynamicSharedMemory);
-	cudaSTRESSColorToGrayscaleKernelTimer.Start();
-	STRESSColorToGrayscaleKernel1B << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory>> >(d_CURANDStates, d_OutputImage, d_InputImage, d_spraysX, d_spraysY, numOfSharedSprays, imageWidth, imageHeight, imageChannels, numOfSprays, radius, numOfSamplePoints, numOfIterations);
-	#elif defined(ENABLE_STRESS_C2G_GPU_2)
-	cudaSTRESSColorToGrayscaleKernelTimer.Start();
-    STRESSColorToGrayscaleKernel2<<<dimGrid, dimBlock>>>(d_CURANDStates, d_OutputImage, d_InputImage, imageWidth, imageHeight, imageChannels, radius, numOfSamplePoints, numOfIterations);
-	#elif defined(ENABLE_STRESS_C2G_GPU_2B) || defined(ENABLE_STRESS_C2G_GPU_2C) || defined(ENABLE_STRESS_C2G_GPU_2D)
-	size_t numOfBytesDynamicSharedMemory = sinLUTLength * sizeof(float);
-	printf("Dynamic: %i\n", numOfBytesDynamicSharedMemory);
-	cudaSTRESSColorToGrayscaleKernelTimer.Start();
-	#if defined(ENABLE_STRESS_C2G_GPU_2B)
-	STRESSColorToGrayscaleKernel2B << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> >(d_CURANDStates, d_OutputImage, d_InputImage, d_SinLUT, imageWidth, imageHeight, imageChannels, sinLUTLength, radius, numOfSamplePoints, numOfIterations);
-	#elif defined(ENABLE_STRESS_C2G_GPU_2C)
-	STRESSColorToGrayscaleKernel2C << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> >(d_CURANDStates, d_OutputImage, d_InputImage, imageWidth, imageHeight, imageChannels, sinLUTLength, radius, numOfSamplePoints, numOfIterations);
-	#elif defined(ENABLE_STRESS_C2G_GPU_2D)
-	STRESSColorToGrayscaleKernel2D << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> >(d_CURANDStates, d_OutputImage, d_InputImage, d_SinLUT, imageWidth, imageHeight, imageChannels, sinLUTLength, radius, numOfSamplePoints, numOfIterations);
-	#endif
-	#elif defined(ENABLE_STRESS_C2G_GPU_3)
-	cudaSTRESSColorToGrayscaleKernelTimer.Start();
-	STRESSColorToGrayscaleKernel3 << <dimGrid, dimBlock >> >(d_CURANDStates, d_OutputImage, d_InputImage, d_spraysX, d_spraysY, imageWidth, imageHeight, imageChannels, numOfSprays, radius, numOfSamplePoints, numOfIterations);
-	#endif
-	cudaSTRESSColorToGrayscaleKernelTimer.Stop();
-
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "STRESSColorToGrayscaleKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
-    
-    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-    // any errors encountered during the launch.
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching STRESSColorToGrayscaleKernel!\n", cudaStatus);
-        goto Error;
-    }
-	printf("Time to execute STRESSColorToGrayscaleKernel kernel:\t%f ms\n", cudaSTRESSColorToGrayscaleKernelTimer.Elapsed());
-
-    // Copy output vector from GPU buffer to host memory.
-	cudaMemcpyOutputTimer.Start();
-    cudaStatus = cudaMemcpy(outputImage, d_OutputImage, outputImageSize * sizeof(uint8_t), cudaMemcpyDeviceToHost);
-	cudaMemcpyOutputTimer.Stop();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy (device -> host) failed!");
-        goto Error;
-    }
-
-	{
-		printf("Time to copy output from device to host:\t\t%f ms\n", cudaMemcpyOutputTimer.Elapsed());
+	
+	float *sinLUT;
+	if (sinLUTLength > 0) {
+		sinLUT = (float*)malloc(sinLUTLength * sizeof(float));
+		float lambda;
+		float theta;
+		if (compressSinLUT)
+			lambda = M_PI / (sinLUTLength * 2); // angle moves from 0 to Pi/2 radians - calculate lambda
+		else
+			lambda = M_PI / (sinLUTLength / 2); // angle moves from 0 to 2Pi radians - calculate lambda
+		for (unsigned int sinLUTIdx = 0; sinLUTIdx < sinLUTLength; sinLUTIdx++) {
+			theta = lambda * sinLUTIdx;
+			sinLUT[sinLUTIdx] = sin(theta);
+		}
 	}
 
-
-Error:
-	cudaFree(d_InputImage);
-	cudaFree(d_OutputImage);
-	#if defined(ENABLE_STRESS_C2G_GPU_2) || defined(ENABLE_STRESS_C2G_GPU_3)
-	cudaFree(d_CURANDStates);
-	#endif
-	#if defined(ENABLE_STRESS_C2G_GPU_1) || defined(ENABLE_STRESS_C2G_GPU_3)
-	for (unsigned int sprayIdx = 0; sprayIdx < numOfSprays; sprayIdx++) {
-		cudaFree(spraysX[sprayIdx]);
-		cudaFree(spraysY[sprayIdx]);
+	cv::Mat inputImage;
+	unsigned int inputImageSize;
+	if (inputImageMode == IMAGE_MODE_GRAYSCALE) {
+		inputImage = cv::imread(inputImageFilepath, CV_LOAD_IMAGE_GRAYSCALE);
+		if (inputImage.empty()) {
+			fprintf(stderr, "Cannot read image file \"%s\".", inputImageFilepath);
+			return 1;
+		}
+		inputImageSize = inputImage.cols * inputImage.rows;
 	}
-	cudaFree(spraysX);
-	cudaFree(spraysY);
-	#endif
+	else if (inputImageMode == IMAGE_MODE_RGB) {
+		inputImage = cv::imread(inputImageFilepath, CV_LOAD_IMAGE_COLOR);
+		if (inputImage.empty()) {
+			fprintf(stderr, "Cannot read image file \"%s\".", inputImageFilepath);
+			return 1;
+		}
+		inputImageSize = inputImage.cols * inputImage.rows * inputImage.channels();
+	}
+	
+	uint8_t *outputImageData;
+	unsigned int outputImageSize;
+	if (outputImageMode == IMAGE_MODE_GRAYSCALE) {
+		outputImageSize = inputImage.cols * inputImage.rows;
+	}
+	else if (outputImageMode == IMAGE_MODE_RGB) {
+		outputImageSize = inputImage.cols * inputImage.rows * inputImage.channels();
+	}
+	outputImageData = (uint8_t*)malloc(outputImageSize * sizeof(uint8_t));
 
-	return cudaStatus;
+	clock_t STRESSCPUClock;
+	double STRESSCPUDuration;
+	int openCVMakeType;
+	if (device == DEVICE_CPU) {
+		if (verbose) {
+			printf("Running STRESS on CPU ...\n");
+			STRESSCPUClock = clock();
+		}
+		if (inputImageMode == IMAGE_MODE_GRAYSCALE) {
+			if (outputImageMode == IMAGE_MODE_GRAYSCALE) {
+				if (numOfSprays > 0) {
+					if (useSpraysExclusively)
+						STRESSGrayscaleToGrayscaleCPU1(outputImageData, inputImage.data, inputImage.cols, inputImage.rows, spraysX, spraysY, numOfSamplePoints, numOfSprays, numOfIterations);
+					else
+						STRESSGrayscaleToGrayscaleCPU3(outputImageData, inputImage.data, inputImage.cols, inputImage.rows, spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
+				}
+				else
+					STRESSGrayscaleToGrayscaleCPU2(outputImageData, inputImage.data, inputImage.cols, inputImage.rows, radius, numOfSamplePoints, numOfIterations);
+			}
+			else if (outputImageMode == IMAGE_MODE_RGB) {
+				fprintf(stderr, "STRESS Grayscale to RGB conversion is not possible.\n");
+				return 1;
+			}
+		}
+		else if (inputImageMode == IMAGE_MODE_RGB) {
+			if (outputImageMode == IMAGE_MODE_RGB) {
+				if (numOfSprays > 0)
+					if (useSpraysExclusively) {
+						fprintf(stderr, "STRESS CPU RGB to RGB conversion using pre-computed sprays exclusively is not yet implemented.\n");
+						return 1;
+					}
+					else
+						STRESSColorToColorCPU3(outputImageData, inputImage.data, inputImage.cols, inputImage.rows, inputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
+				else {
+					fprintf(stderr, "STRESS CPU RGB to RGB conversion without using pre-computed sprays is not yet implemented.\n");
+					return 1;
+				}
+			}
+			else if (outputImageMode == IMAGE_MODE_GRAYSCALE) {
+				if (numOfSprays > 0) {
+					if (useSpraysExclusively) {
+						fprintf(stderr, "STRESS RGB to Grayscale conversion using pre-computed sprays exclusively on CPU is not yet implemented.\n");
+						return 1;
+					}
+					else
+						STRESSColorToGrayscaleCPU3(outputImageData, inputImage.data, inputImage.cols, inputImage.rows, inputImage.channels(), spraysX, spraysY, radius, numOfSamplePoints, numOfSprays, numOfIterations);
+				}
+				else {
+					fprintf(stderr, "STRESS CPU RGB to Grayscale conversion without using pre-computed sprays is not yet implemented.\n");
+					return 1;
+				}
+			}
+		}
+			
+		if (verbose) {
+			STRESSCPUDuration = (clock() - STRESSCPUClock) / (double)CLOCKS_PER_SEC;
+			printf("Finished in %fs, saving output image to disk ...\n", STRESSCPUDuration);
+		}
+
+		if (outputImageMode == IMAGE_MODE_GRAYSCALE)
+			openCVMakeType = CV_8UC1;
+		else if (outputImageMode == IMAGE_MODE_RGB)
+			openCVMakeType = CV_8UC3;
+
+		cv::Mat outputImage(inputImage.rows, inputImage.cols, openCVMakeType, outputImageData);
+		cv::imwrite(outputImageFilepath, outputImage);
+
+		return 0;
+	}
+	else if (device == DEVICE_GPU) {
+		bool finished = false;
+		cudaError_t cudaStatus;
+		GpuTimer cudaMallocInputTimer;
+		GpuTimer cudaMallocOutputTimer;
+		GpuTimer cudaMemcpyInputTimer;
+		GpuTimer cudaMallocSpraysTimer;
+		GpuTimer cudaMemcpySpraysTimer;
+		GpuTimer cudaMallocCurandStatesTimer;
+		GpuTimer cudaSetupRandomKernelTimer;
+		GpuTimer cudaMallocSinLUTTimer;
+		GpuTimer cudaMemcpySinLUTTimer;
+		GpuTimer cudaSTRESSKernelTimer;
+		GpuTimer cudaMemcpyOutputTimer;
+
+		uint8_t *d_InputImage;
+		uint8_t *d_OutputImage;
+		short int *d_spraysX;
+		short int *d_spraysY;
+		short int *allSpraysX;
+		short int *allSpraysY;
+		curandState *d_CURANDStates;
+		float *d_SinLUT;
+		size_t numOfBytesDynamicSharedMemory;
+
+		bool useRandomness;
+
+		dim3 dimBlock;
+		dim3 dimGrid;
+
+		cv::Mat outputImage(inputImage.rows, inputImage.cols, openCVMakeType);
+
+		// Choose which GPU to run on, change this on a multi-GPU system.
+		cudaStatus = cudaSetDevice(0);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaSetDevice failed! Do you have a CUDA-capable GPU installed?");
+			goto CudaError;
+		}
+
+		// Allocate GPU buffers for two vectors (one input, one output).
+		if (verbose)
+			cudaMallocInputTimer.Start();
+		cudaStatus = cudaMalloc((void**)&d_InputImage, inputImageSize * sizeof(uint8_t));
+		if (verbose)
+			cudaMallocInputTimer.Stop();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc (input image) failed!");
+			goto CudaError;
+		}
+		if (verbose)
+			printf("Time to allocate input: %f ms\n", cudaMallocInputTimer.Elapsed());
+
+		if (verbose)
+			cudaMallocOutputTimer.Start();
+		cudaStatus = cudaMalloc((void**)&d_OutputImage, outputImageSize * sizeof(uint8_t));
+		if (verbose)
+			cudaMallocOutputTimer.Stop();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc (output image) failed!");
+			goto CudaError;
+		}
+		if (verbose)
+			printf("Time to allocate output: %f ms\n", cudaMallocOutputTimer.Elapsed());
+
+		if (numOfSprays > 0) {
+			if (verbose)
+				cudaMallocSpraysTimer.Start();
+			unsigned int spraySampleStartIdx;
+			cudaMalloc((void**)&d_spraysX, numOfSprays * numOfSamplePoints * sizeof(short int));
+			cudaMalloc((void**)&d_spraysY, numOfSprays * numOfSamplePoints * sizeof(short int));
+			if (verbose)
+				cudaMallocSpraysTimer.Stop();
+			cudaStatus = cudaGetLastError();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaMalloc (pre-computed random sprays) failed!");
+				goto CudaError;
+			}
+			if (verbose)
+				printf("Time to allocate pre-computed random sprays: %f ms\n", cudaMallocSpraysTimer.Elapsed());
+
+			// Copy pre-computed random sprays to GPU buffers.
+			allSpraysX = (short int*)malloc(numOfSprays * numOfSamplePoints * sizeof(short int));
+			allSpraysY = (short int*)malloc(numOfSprays * numOfSamplePoints * sizeof(short int));
+			for (unsigned int sprayIdx = 0; sprayIdx < numOfSprays; sprayIdx++) {
+				for (unsigned int sampleIdx = 0; sampleIdx < numOfSamplePoints; sampleIdx++) {
+					allSpraysX[numOfSamplePoints * sprayIdx + sampleIdx] = spraysX[sprayIdx][sampleIdx];
+					allSpraysY[numOfSamplePoints * sprayIdx + sampleIdx] = spraysY[sprayIdx][sampleIdx];
+				}
+			}
+		}
+
+		useRandomness = numOfSprays == 0 || (numOfSprays > 0 && !useSpraysExclusively);
+		if (useRandomness) {
+			// Allocate random number generator states
+			if (verbose)
+				cudaMallocCurandStatesTimer.Start();
+			cudaStatus = cudaMalloc((void**)&d_CURANDStates, outputImageSize * sizeof(curandState));
+			if (verbose)
+				cudaMallocCurandStatesTimer.Stop();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaMalloc (CURAND states) failed!");
+				goto CudaError;
+			}
+			if (verbose) {
+				printf("Time to allocate CURAND states: %f ms\n", cudaMallocCurandStatesTimer.Elapsed());
+				cudaSetupRandomKernelTimer.Start();
+			}
+		}
+
+		if (sinLUTLength > 0) {
+			// Allocate Sine LUT
+			if (verbose)
+				cudaMallocSinLUTTimer.Start();
+			cudaStatus = cudaMalloc((void**)&d_SinLUT, sinLUTLength * sizeof(float));
+			if (verbose)
+				cudaMallocSinLUTTimer.Stop();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaMalloc (Sine LUT) failed!");
+				goto CudaError;
+			}
+			if (verbose)
+				printf("Time to allocate Sine LUT: %f ms\n", cudaMallocSinLUTTimer.Elapsed());
+		}
+
+		// Copy input image from host memory to GPU buffers.
+		if (verbose)
+			cudaMemcpyInputTimer.Start();
+		cudaStatus = cudaMemcpy(d_InputImage, inputImage.data, inputImageSize * sizeof(uint8_t), cudaMemcpyHostToDevice);
+		if (verbose)
+			cudaMemcpyInputTimer.Stop();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy (input image, host -> device) failed!");
+			goto CudaError;
+		}
+		if (verbose)
+			printf("Time to copy input from host to device: %f ms\n", cudaMemcpyInputTimer.Elapsed());
+
+		if (numOfSprays > 0) {
+			// Copy pre-computed random sprays from host memory to GPU buffers.
+			if (verbose)
+				cudaMemcpySpraysTimer.Start();
+			cudaMemcpy(d_spraysX, allSpraysX, numOfSprays * numOfSamplePoints * sizeof(short int), cudaMemcpyHostToDevice);
+			cudaMemcpy(d_spraysY, allSpraysY, numOfSprays * numOfSamplePoints * sizeof(short int), cudaMemcpyHostToDevice);
+			if (verbose)
+				cudaMemcpySpraysTimer.Stop();
+			cudaStatus = cudaGetLastError();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaMemcpy (pre-computed random sprays, host -> device) failed!");
+				goto CudaError;
+			}
+			if (verbose)
+				printf("Time to copy pre-computed random sprays from host to device: %f ms\n", cudaMemcpySpraysTimer.Elapsed());
+		}
+
+		if (sinLUTLength > 0) {
+			// Copy Sine LUT from host memory to GPU buffers.
+			if (verbose)
+				cudaMemcpySinLUTTimer.Start();
+			cudaStatus = cudaMemcpy(d_SinLUT, sinLUT, sinLUTLength * sizeof(float), cudaMemcpyHostToDevice);
+			if (verbose)
+				cudaMemcpySinLUTTimer.Stop();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaMemcpy (Sine LUT, host -> device) failed!");
+				goto CudaError;
+			}
+			if (verbose)
+				printf("Time to copy Sine LUT from host to device: %f ms\n", cudaMemcpySinLUTTimer.Elapsed());
+		}
+
+		// Declare block and grid dimensions (one thread for each output pixel).
+		dimBlock.x = dimBlock.y = BLOCK_WIDTH;
+		dimGrid.x = (inputImage.cols - 1) / BLOCK_WIDTH + 1;
+		dimGrid.y = (inputImage.rows - 1) / BLOCK_WIDTH + 1;
+		dimBlock.z = dimGrid.z = 1;
+
+		if (useRandomness) {
+			// Launch the setup random number generator kernel on the GPU.
+			unsigned long long seed = time(NULL);
+			setupRandomKernel << <dimGrid, dimBlock >> > (d_CURANDStates, seed, inputImage.cols, inputImage.rows);
+			if (verbose)
+				cudaSetupRandomKernelTimer.Stop();
+			// Check for any errors launching the kernel
+			cudaStatus = cudaGetLastError();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "setupRandomKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+				goto CudaError;
+			}
+			// cudaDeviceSynchronize waits for the kernel to finish, and returns
+			// any errors encountered during the launch.
+			cudaStatus = cudaDeviceSynchronize();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching setupRandomKernel!\n", cudaStatus);
+				goto CudaError;
+			}
+			if (verbose)
+				printf("Time to execute setup random kernel: %f ms\n", cudaSetupRandomKernelTimer.Elapsed());
+		}
+
+		if (verbose)
+			printf("Running STRESS on GPU ...\n");
+
+		// Launch the STRESS kernel on the GPU.
+		// Thanks to https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#execution-configuration
+		if (verbose)
+			cudaSTRESSKernelTimer.Start();
+		if (numOfSprays > 0) {
+			if (useSpraysExclusively)
+				if (numOfSharedSprays > 0) {
+					numOfBytesDynamicSharedMemory = numOfSharedSprays * numOfSamplePoints * 2 * sizeof(short int);
+					if (verbose)
+						printf("Dynamic shared memory size (pre-computed sprays): %iB\n", numOfBytesDynamicSharedMemory);
+					STRESSColorToGrayscaleKernel1B << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> > (d_CURANDStates, d_OutputImage, d_InputImage, d_spraysX, d_spraysY, numOfSharedSprays, inputImage.cols, inputImage.rows, inputImage.channels(), numOfSprays, radius, numOfSamplePoints, numOfIterations);
+				}
+				else
+					STRESSColorToGrayscaleKernel1 << <dimGrid, dimBlock >> > (d_CURANDStates, d_OutputImage, d_InputImage, d_spraysX, d_spraysY, inputImage.cols, inputImage.rows, inputImage.channels(), numOfSprays, radius, numOfSamplePoints, numOfIterations);
+			else {
+				if (sinLUTLength > 0) {
+					numOfBytesDynamicSharedMemory = sinLUTLength * sizeof(float);
+					if (verbose)
+						printf("Dynamic shared memory size (pre-computed sprays): %iB\n", numOfBytesDynamicSharedMemory);
+					if (computeSinLUTOnGPU) {
+						if (compressSinLUT) {
+							fprintf(stderr, "STRESS GPU color to grayscale conversion using pre-computed random sprays with compressed Sine LUT computed on GPU in each thread block is not yet implemented.\n");
+							goto CudaError;
+						}
+						else {
+							fprintf(stderr, "STRESS GPU color to grayscale conversion using pre-computed random sprays with compressed Sine LUT is not yet implemented.\n");
+							goto CudaError;
+						}
+					}
+					else if (compressSinLUT) {
+						fprintf(stderr, "STRESS GPU color to grayscale conversion using pre-computed random sprays with compressed Sine LUT is not yet implemented.\n");
+						goto CudaError;
+					}
+					else {
+						fprintf(stderr, "STRESS GPU color to grayscale conversion using pre-computed random sprays with Sine LUT is not yet implemented.\n");
+						goto CudaError;
+					}
+				}
+				else
+					STRESSColorToGrayscaleKernel3 << <dimGrid, dimBlock >> > (d_CURANDStates, d_OutputImage, d_InputImage, d_spraysX, d_spraysY, inputImage.cols, inputImage.rows, inputImage.channels(), numOfSprays, radius, numOfSamplePoints, numOfIterations);
+			}
+		}
+		else {
+			if (sinLUTLength > 0) {
+				numOfBytesDynamicSharedMemory = sinLUTLength * sizeof(float);
+				if (computeSinLUTOnGPU) {
+					if (compressSinLUT) {
+						fprintf(stderr, "STRESS GPU color to grayscale conversion using compressed Sine LUT computed on GPU in each thread block is not yet implemented.\n");
+						goto CudaError;
+					}
+					else {
+						if (verbose)
+							printf("Dynamic shared memory size (Sine LUT): %iB\n", numOfBytesDynamicSharedMemory);
+						STRESSColorToGrayscaleKernel2C << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> > (d_CURANDStates, d_OutputImage, d_InputImage, inputImage.cols, inputImage.rows, inputImage.channels(), sinLUTLength, radius, numOfSamplePoints, numOfIterations);
+					}
+				}
+				else if (compressSinLUT) {
+					if (verbose)
+						printf("Dynamic shared memory size (Compressed Sine LUT): %iB\n", numOfBytesDynamicSharedMemory);
+					STRESSColorToGrayscaleKernel2D << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> > (d_CURANDStates, d_OutputImage, d_InputImage, d_SinLUT, inputImage.cols, inputImage.rows, inputImage.channels(), sinLUTLength, radius, numOfSamplePoints, numOfIterations);
+				}
+				else {
+					if (verbose)
+						printf("Dynamic shared memory size (Sine LUT): %iB\n", numOfBytesDynamicSharedMemory);
+					STRESSColorToGrayscaleKernel2B << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> > (d_CURANDStates, d_OutputImage, d_InputImage, d_SinLUT, inputImage.cols, inputImage.rows, inputImage.channels(), sinLUTLength, radius, numOfSamplePoints, numOfIterations);
+				}
+			}
+			else
+				STRESSColorToGrayscaleKernel2 << <dimGrid, dimBlock >> > (d_CURANDStates, d_OutputImage, d_InputImage, inputImage.cols, inputImage.rows, inputImage.channels(), radius, numOfSamplePoints, numOfIterations);
+		}
+		if (verbose)
+			cudaSTRESSKernelTimer.Stop();
+
+		// Check for any errors launching the kernel
+		cudaStatus = cudaGetLastError();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "STRESSColorToGrayscaleKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+			goto CudaError;
+		}
+
+		// cudaDeviceSynchronize waits for the kernel to finish, and returns
+		// any errors encountered during the launch.
+		cudaStatus = cudaDeviceSynchronize();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching STRESSColorToGrayscaleKernel!\n", cudaStatus);
+			goto CudaError;
+		}
+		if (verbose)
+			printf("Time to execute STRESS kernel: %f ms\n", cudaSTRESSKernelTimer.Elapsed());
+
+		// Copy output vector from GPU buffer to host memory.
+		if (verbose)
+			cudaMemcpyOutputTimer.Start();
+		cudaStatus = cudaMemcpy(outputImageData, d_OutputImage, outputImageSize * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+		if (verbose)
+			cudaMemcpyOutputTimer.Stop();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy (output image, device -> host) failed!");
+			goto CudaError;
+		}
+		if (verbose)
+			printf("Time to copy output from device to host: %f ms\n", cudaMemcpyOutputTimer.Elapsed());
+
+		if (verbose)
+			printf("Saving output image to disk ...\n");
+
+		if (outputImageMode == IMAGE_MODE_GRAYSCALE)
+			openCVMakeType = CV_8UC1;
+		else if (outputImageMode == IMAGE_MODE_RGB)
+			openCVMakeType = CV_8UC3;
+
+		//cv::Mat outputImage(inputImage.rows, inputImage.cols, openCVMakeType, outputImageData);
+		outputImage.data = outputImageData;
+		cv::imwrite(outputImageFilepath, outputImage);
+
+		finished = true;
+
+	CudaError:
+		cudaFree(d_InputImage);
+		cudaFree(d_OutputImage);
+		if (numOfSprays > 0) {
+			cudaFree(spraysX);
+			cudaFree(spraysY);
+		}
+		if (useRandomness)
+			cudaFree(d_CURANDStates);
+
+		// cudaDeviceReset must be called before exiting in order for profiling and
+		// tracing tools such as Nsight and Visual Profiler to show complete traces.
+		cudaError_t cudaStatusReset = cudaDeviceReset();
+		if (cudaStatusReset != cudaSuccess)
+			fprintf(stderr, "cudaDeviceReset failed!");
+
+		if (finished)
+			if (cudaStatusReset != cudaSuccess)
+				return cudaStatusReset;
+			else
+				return 0;
+		else
+			return cudaStatus;
+	}
 }
-#endif
