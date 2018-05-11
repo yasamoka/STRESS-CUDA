@@ -1609,7 +1609,7 @@ int main(int argc, char *argv[])
 		dim3 dimBlock;
 		dim3 dimGrid;
 
-		cv::Mat outputImage(inputImage.rows, inputImage.cols, openCVMakeType);
+		cv::Mat *outputImage;
 
 		// Choose which GPU to run on, change this on a multi-GPU system.
 		cudaStatus = cudaSetDevice(0);
@@ -1891,9 +1891,8 @@ int main(int argc, char *argv[])
 		else if (outputImageMode == IMAGE_MODE_RGB)
 			openCVMakeType = CV_8UC3;
 
-		//cv::Mat outputImage(inputImage.rows, inputImage.cols, openCVMakeType, outputImageData);
-		outputImage.data = outputImageData;
-		cv::imwrite(outputImageFilepath, outputImage);
+		outputImage = new cv::Mat(inputImage.rows, inputImage.cols, openCVMakeType, outputImageData);
+		cv::imwrite(outputImageFilepath, *outputImage);
 
 		if (verbose)
 			printf("Freeing up device memory and resetting device ...\n");
