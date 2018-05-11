@@ -1895,6 +1895,9 @@ int main(int argc, char *argv[])
 		outputImage.data = outputImageData;
 		cv::imwrite(outputImageFilepath, outputImage);
 
+		if (verbose)
+			printf("Freeing up device memory and resetting device ...\n");
+		
 		finished = true;
 
 	CudaError:
