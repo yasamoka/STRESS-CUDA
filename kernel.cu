@@ -49,7 +49,7 @@ void computeRandomSpraysCPU(short int ***spraysX, short int ***spraysY, const un
 	*spraysX = (short int**)malloc(numOfSprays * sizeof(short int*));	// sprays abscissas array
 	*spraysY = (short int**)malloc(numOfSprays * sizeof(short int*));	// sprays ordinates array
 
-																		// initialize neighborbood as empty
+	// initialize neighborbood as empty
 	for (unsigned int neighborIdx = 0; neighborIdx < area; neighborIdx++) {
 		neighborhood[neighborIdx] = false;
 	}
@@ -934,12 +934,14 @@ __global__ void STRESSColorToGrayscaleKernel2B(curandState *state, uint8_t *outp
 				
 				sinLUTFloorVal = sharedSinLUT[sinLUTFloorCosValIdx];	// get Sine LUT floor value (Cosine)
 				sinLUTCeilVal = sharedSinLUT[(sinLUTFloorCosValIdx + 1) % sinLUTLength];	// get Sine LUT ceil value (Cosine)
-				sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal) / 2;	// calculate Sine LUT interpolated value (Cosine)
+				//sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal) / 2;	// calculate Sine LUT interpolated value (Cosine)
+				sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal);	// calculate Sine LUT interpolated value (Cosine)
 				randomSamplePixelX = targetPixelX + randomRadius * sinLUTInterpolatedVal;	// compute random pixel abscissa
 
 				sinLUTFloorVal = sharedSinLUT[sinLUTFloorSinValIdx % sinLUTLength];
 				sinLUTCeilVal = sharedSinLUT[(sinLUTFloorSinValIdx + 1) % sinLUTLength];
-				sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal) / 2;	// calculate Sine LUT interpolated value (Sine)
+				//sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal) / 2;	// calculate Sine LUT interpolated value (Sine)
+				sinLUTInterpolatedVal = (sinLUTFloatOffset * sinLUTCeilVal + (1 - sinLUTFloatOffset) * sinLUTFloorVal);	// calculate Sine LUT interpolated value (Sine)
 				randomSamplePixelY = targetPixelY + randomRadius * sinLUTInterpolatedVal;	// compute random pixel ordinate
 
 				if (randomSamplePixelX >= 0 && randomSamplePixelX < imageWidth && randomSamplePixelY >= 0 && randomSamplePixelY < imageHeight) {	// if random pixel is within image
@@ -1128,8 +1130,8 @@ __global__ void STRESSColorToGrayscaleKernel2D(curandState *state, uint8_t *outp
 		float sinLUTInterpolatedCosVal;	// Sine LUT interpolated value (Cosine)
 		bool sinIsNegative;		// Sine is negative flag
 		bool cosIsNegative;		// Cosine is negative flag
-		uint8_t sinNegator;		// Sine negator
-		uint8_t cosNegator;		// Cosine negator
+		int8_t sinNegator;		// Sine negator
+		int8_t cosNegator;		// Cosine negator
 
 		int randomSamplePixelX;	// random sample pixel abscissa
 		int randomSamplePixelY;	// random sample pixel ordinate
@@ -1176,8 +1178,10 @@ __global__ void STRESSColorToGrayscaleKernel2D(curandState *state, uint8_t *outp
 				sinLUTFloorSinVal = sharedSinLUT[sinLUTFloorSinValIdx % sinLUTLength];	// get Sine LUT floor value (Sine)
 				sinLUTCeilSinVal = sharedSinLUT[(sinLUTFloorSinValIdx + 1) % sinLUTLength];	// get Sine LUT ceil value (Sine)
 				sinIsNegative = (randomTheta > 0.5f); // value becomes negative if random theta >= 0.5 (angles >= Pi radians) - avoids control divergence
-				sinNegator = (uint8_t)!sinIsNegative - (uint8_t)sinIsNegative;
-				sinLUTInterpolatedSinVal = sinNegator * (sinLUTFloatSinOffset * sinLUTCeilSinVal + (1.0f - sinLUTFloatSinOffset) * sinLUTFloorSinVal) / 2;	// calculate Sine LUT interpolated value (Sine)
+				//sinNegator = (uint8_t)!sinIsNegative - (uint8_t)sinIsNegative;
+				sinNegator = !sinIsNegative - sinIsNegative;
+				//sinLUTInterpolatedSinVal = sinNegator * (sinLUTFloatSinOffset * sinLUTCeilSinVal + (1.0f - sinLUTFloatSinOffset) * sinLUTFloorSinVal) / 2;	// calculate Sine LUT interpolated value (Sine)
+				sinLUTInterpolatedSinVal = sinNegator * (sinLUTFloatSinOffset * sinLUTCeilSinVal + (1.0f - sinLUTFloatSinOffset) * sinLUTFloorSinVal);	// calculate Sine LUT interpolated value (Sine)
 				randomSamplePixelY = targetPixelY + randomRadius * sinLUTInterpolatedSinVal;	// compute random pixel ordinate
 				
 				sinLUTFloatCosIdx = (0.25f - alpha) * 4 * (sinLUTLength - 1);
@@ -1186,8 +1190,10 @@ __global__ void STRESSColorToGrayscaleKernel2D(curandState *state, uint8_t *outp
 				sinLUTFloorCosVal = sharedSinLUT[sinLUTFloorCosValIdx % sinLUTLength];	// get Sine LUT floor value (Cosine)
 				sinLUTCeilCosVal = sharedSinLUT[(sinLUTFloorCosValIdx + 1) % sinLUTLength];	// get Sine LUT ceil value (Cosine)
 				cosIsNegative = (randomTheta > 0.25f) && (randomTheta < 0.75f); // value becomes negative if 0.25 < random theta < 0.75 (angles >= Pi radians) - avoids control divergence
-				cosNegator = (uint8_t)!cosIsNegative - (uint8_t)cosIsNegative;
-				sinLUTInterpolatedCosVal = cosNegator * (sinLUTFloatCosOffset * sinLUTCeilCosVal + (1.0f - sinLUTFloatCosOffset) * sinLUTFloorCosVal) / 2;	// calculate Sine LUT interpolated value (Cosine)
+				//cosNegator = (uint8_t)!cosIsNegative - (uint8_t)cosIsNegative;
+				cosNegator = !cosIsNegative - cosIsNegative;
+				//sinLUTInterpolatedCosVal = cosNegator * (sinLUTFloatCosOffset * sinLUTCeilCosVal + (1.0f - sinLUTFloatCosOffset) * sinLUTFloorCosVal) / 2;	// calculate Sine LUT interpolated value (Cosine)
+				sinLUTInterpolatedCosVal = cosNegator * (sinLUTFloatCosOffset * sinLUTCeilCosVal + (1.0f - sinLUTFloatCosOffset) * sinLUTFloorCosVal);	// calculate Sine LUT interpolated value (Cosine)
 				randomSamplePixelX = targetPixelX + randomRadius * sinLUTInterpolatedCosVal;	// compute random pixel abscissa
 
 				if (randomSamplePixelX >= 0 && randomSamplePixelX < imageWidth && randomSamplePixelY >= 0 && randomSamplePixelY < imageHeight) {	// if random pixel is within image
