@@ -21,7 +21,8 @@
 
 #include "GpuTimer.h"
 #include "tclap/CmdLine.h"
-#include "config.h"
+
+#define BLOCK_WIDTH 32
 
 #define IMAGE_MODE_GRAYSCALE 0
 #define IMAGE_MODE_RGB 1
