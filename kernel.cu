@@ -1226,6 +1226,332 @@ __global__ void STRESSColorToGrayscaleKernel2D(curandState *state, uint8_t *outp
 	}
 }
 
+// uses trigonometry in order to figure out the area in which a sample point would definitely be found upon spontaneous random generation.
+// Rather than having to generate a sample point then discard it if it is found to lie outside the boundaries of the image, this algorithm
+// figures out the maximum feasible radius as well as the ranges of angles within which a random angle would yield a valid sample point
+// for the randomly chosen radius. Experimental.
+__global__ void STRESSColorToGrayscaleKernel2E(curandState *state, uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
+	unsigned int targetPixelX = blockDim.x * blockIdx.x + threadIdx.x; // target pixel abscissa
+	unsigned int targetPixelY = blockDim.y * blockIdx.y + threadIdx.y; // target pixel ordinate
+
+	if (targetPixelX < imageWidth && targetPixelY < imageHeight) {	// if target pixel is within image
+		unsigned int idx = imageWidth * targetPixelY + targetPixelX;	// thread / output pixel absolute index
+		curandState localState = state[idx];	// load random number generator state from global memory
+
+		float randomRadius;		// random radius
+		float randomTheta;		// random theta
+		const float circle = 2 * M_PI; // 2Pi
+		int randomSamplePixelX;	// random sample pixel abscissa
+		int randomSamplePixelY;	// random sample pixel ordinate
+		unsigned int randomSamplePixelIdx;	// random sample pixel index
+		unsigned int randomSampleImagePixelIdx;	// random sample pixel absolute index in image
+		unsigned int randomSampleImagePixelChannelIdx;	// random sample pixel channel index
+
+		float sinVal;	// sine value
+		float cosVal;	// cosine value
+
+		unsigned int targetPixelIdx = idx * imageChannels;	// target pixel (p) absolute index
+		unsigned int targetPixelChannelIdx;		// target pixel channel absolute index
+		uint8_t targetPixel[3]; // target pixel array for channels
+		uint8_t samplePixel[3];	// sample pixel array for channels
+		double outputPixel;		// output pixel values accumulator across iterations
+		uint8_t channelIdx;		// channel index
+
+		uint8_t Emin[3];	// Emin array of size imageChannels
+		uint8_t Emax[3];	// Emax array of size imageChannels
+
+							// for calculating (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+		uint8_t Edelta;
+		unsigned int dotProd, ElenSq;
+
+
+
+
+		float randomThetaInRange;
+		float xdiff;
+		float ydiff;
+		//float distanceToCorner[4];
+		float distanceToCorner;
+		float maxFeasibleRadius;
+
+		const float iW = imageWidth - 1;
+		const float iH = imageHeight - 1;
+		const float tX2 = targetPixelX * targetPixelX;
+		const float tY2 = targetPixelY * targetPixelY;
+
+		const float Dr = -4 * (iW * (iW - 2 * targetPixelX) + tX2); // D for right intersection
+		const float Dt = -4 * tY2; // D for top intersection
+		const float Dl = -4 * tX2; // D for left intersection
+		const float Db = -4 * (iH * (iH - 2 * targetPixelY) + tY2); // D for bottom intersection
+
+		float f, g;
+		float determinant;
+		float intersectionRLeave;
+		float intersectionREnter;
+		float intersectionTLeave;
+		float intersectionTEnter;
+		float intersectionLLeave;
+		float intersectionLEnter;
+		float intersectionBLeave;
+		float intersectionBEnter;
+		float thetaRangeStart[4];
+		float thetaRangeEnd[4];
+		float thetaRangeSum;
+		float thetaRangeDiff;
+		float thetaRangeScan[4];
+		float randomThetaInRangeDiff[4];
+		uint8_t thetaRangeEnterIdx;
+		uint8_t thetaRangeLeaveIdx;
+		bool isEnter;
+		bool entered;
+		bool foundFirstLeave;
+		uint8_t quadrant;
+		bool negateSin;
+		bool negateCos;
+		bool firstLeaveDir; // false = cos, true = sin
+		float firstLeave;
+
+		bool isLeave;
+		bool isFirstLeave;
+		bool foundLeave;
+
+		float val;
+		float val1;
+		unsigned char* cast = reinterpret_cast<unsigned char *>(&val);
+		unsigned char* cast1 = reinterpret_cast<unsigned char *>(&val1);
+
+		xdiff = (iW - targetPixelX);
+		ydiff = (iH - targetPixelY);
+		/*distanceToCorner[0] = sqrtf(tX2 + tY2); // top left
+		distanceToCorner[1] = sqrtf(xdiff * xdiff + tY2); // top right
+		distanceToCorner[2] = sqrtf(tX2 + ydiff * ydiff); // bottom left
+		distanceToCorner[3] = sqrtf(xdiff * xdiff + ydiff * ydiff); // bottom right
+		for (uint8_t i = 0; i < 4; i++) {
+		maxFeasibleRadius = fmaxf(maxFeasibleRadius, distanceToCorner[i]);
+		}
+		maxFeasibleRadius = fminf(maxFeasibleRadius, radius);*/
+
+		maxFeasibleRadius = fmax(fmaxf(sqrtf(tX2 + tY2), sqrtf(xdiff * xdiff + tY2)), fmaxf(sqrtf(tX2 + ydiff * ydiff), sqrtf(xdiff * xdiff + ydiff * ydiff)));
+		maxFeasibleRadius = fminf(maxFeasibleRadius, radius);
+
+		// initialize output pixel values accumulator to 0
+		outputPixel = 0.0f;
+
+		// iteration loop
+		for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+			// load target pixel and set Emin and Emax equal to target pixel value at each channel
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				targetPixelChannelIdx = targetPixelIdx + channelIdx;
+				Emin[channelIdx] = Emax[channelIdx] = targetPixel[channelIdx] = inputImage[targetPixelChannelIdx];
+			}
+
+			// generate random sample points and calculate envelope
+			randomSamplePixelIdx = 0;
+			while (randomSamplePixelIdx < numOfSamplePoints) {
+				randomRadius = curand_uniform(&localState) * maxFeasibleRadius;
+
+				g = randomRadius * randomRadius * 4;
+
+				// right intersection
+				determinant = Dr + g;
+				f = sqrtf(determinant) / 2;
+				intersectionRLeave = targetPixelY + f; // leaving right
+				intersectionREnter = targetPixelY - f; // entering right
+
+													   // top intersection
+				determinant = Dt + g;
+				f = sqrtf(determinant) / 2;
+				intersectionTLeave = targetPixelX + f; // leaving top
+				intersectionTEnter = targetPixelX - f; // entering top
+
+													   // left intersection
+				determinant = Dl + g;
+				f = sqrtf(determinant) / 2;
+				intersectionLLeave = targetPixelY - f; // leaving left
+				intersectionLEnter = targetPixelY + f; // entering left
+
+													   // bottom intersection
+				determinant = Db + g;
+				f = sqrtf(determinant) / 2;
+				intersectionBLeave = targetPixelX - f; // leaving bottom
+				intersectionBEnter = targetPixelX + f; // entering bottom
+
+				thetaRangeEnterIdx = 0;
+				thetaRangeLeaveIdx = 0;
+				isEnter = 0;
+				entered = false;
+				foundFirstLeave = false;
+				isLeave = false;
+				isFirstLeave = false;
+				foundLeave = false;
+				firstLeave = 0;
+
+				for (unsigned int thetaRangeIdx = 0; thetaRangeIdx < 4; thetaRangeIdx++) {
+					thetaRangeStart[thetaRangeIdx] = thetaRangeEnd[thetaRangeIdx] = 0.0f;
+				}
+
+				isFirstLeave = !isnan(intersectionRLeave);
+				val = intersectionRLeave;
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isFirstLeave * 0xFF;
+				firstLeave = !isFirstLeave * firstLeave + isFirstLeave * val;
+				firstLeaveDir = firstLeaveDir || isFirstLeave;
+				foundFirstLeave = foundFirstLeave || isFirstLeave;
+				quadrant = !isFirstLeave * quadrant + isFirstLeave * 3;
+
+				isEnter = !entered && intersectionREnter >= 0 && intersectionREnter <= iH;
+				val = asinf((targetPixelY - intersectionREnter) / randomRadius);
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isEnter * 0xFF;
+				thetaRangeStart[thetaRangeEnterIdx] = isEnter * val;
+				thetaRangeEnterIdx += isEnter;
+				entered = entered || isEnter;
+
+				isLeave = entered && !isnan(intersectionTLeave);
+				val = acosf((intersectionTLeave - targetPixelX) / randomRadius);
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isLeave * 0xFF;
+				thetaRangeEnd[thetaRangeLeaveIdx] = isLeave * val;
+				thetaRangeLeaveIdx += isLeave;
+				entered = !isLeave && entered;
+
+				isFirstLeave = (!foundFirstLeave) && (!isnan(intersectionTLeave));
+				val = intersectionTLeave;
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isFirstLeave * 0xFF;
+				firstLeave = !isFirstLeave * firstLeave + isFirstLeave * val;
+				firstLeaveDir = !isFirstLeave && firstLeaveDir;
+				foundFirstLeave = foundFirstLeave || isFirstLeave;
+				quadrant = !isFirstLeave * quadrant;
+
+				isEnter = !entered && intersectionTEnter >= 0 && intersectionTEnter <= iW;
+				val = acosf((intersectionTEnter - targetPixelX) / randomRadius);
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isEnter * 0xFF;
+				thetaRangeStart[thetaRangeEnterIdx] = isEnter * val;
+				thetaRangeEnterIdx += isEnter;
+				entered = entered || isEnter;
+
+				isLeave = entered && !isnan(intersectionLLeave);
+				val = M_PI - asinf((targetPixelY - intersectionLLeave) / randomRadius);
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isLeave * 0xFF;
+				thetaRangeEnd[thetaRangeLeaveIdx] = isLeave * val;
+				thetaRangeLeaveIdx += isLeave;
+				entered = !isLeave && entered;
+
+				isFirstLeave = !foundFirstLeave && !isnan(intersectionLLeave);
+				val = intersectionLLeave;
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isFirstLeave * 0xFF;
+				firstLeave = !isFirstLeave * firstLeave + isFirstLeave * val;
+				firstLeaveDir = isFirstLeave || firstLeaveDir;
+				foundFirstLeave = foundFirstLeave || isFirstLeave;
+				quadrant = !isFirstLeave * quadrant + isFirstLeave;
+
+				isEnter = !entered && intersectionLEnter >= 0 && intersectionLEnter <= iH;
+				val = M_PI - asinf((targetPixelY - intersectionLEnter) / randomRadius);
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isEnter * 0xFF;
+				thetaRangeStart[thetaRangeEnterIdx] = isEnter * val;
+				thetaRangeEnterIdx += isEnter;
+				entered = entered || isEnter;
+
+				isLeave = entered && !isnan(intersectionBLeave);
+				val = circle - acosf((intersectionBLeave - targetPixelX) / randomRadius);
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isLeave * 0xFF;
+				thetaRangeEnd[thetaRangeLeaveIdx] = isLeave * val;
+				thetaRangeLeaveIdx += isLeave;
+				entered = !isLeave && entered;
+
+				isFirstLeave = (!foundFirstLeave && !isnan(intersectionBLeave));
+				val = intersectionBLeave;
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isFirstLeave * 0xFF;
+				firstLeave = !isFirstLeave * firstLeave + isFirstLeave * val;
+				firstLeaveDir = !isFirstLeave && firstLeaveDir;
+				foundFirstLeave = foundFirstLeave || isFirstLeave;
+				quadrant = !isFirstLeave * quadrant + isFirstLeave * 2;
+
+				isEnter = !entered && intersectionBEnter >= 0 && intersectionBEnter <= iW;
+				val = circle - acosf((intersectionBEnter - targetPixelX) / randomRadius);
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= isEnter * 0xFF;
+				thetaRangeStart[thetaRangeEnterIdx] = isEnter * val;
+				thetaRangeEnterIdx += isEnter;
+				entered = entered || isEnter;
+
+				foundLeave = entered && foundFirstLeave;
+				negateSin = (quadrant == 1) || (quadrant == 2);
+				val = (quadrant == 1 || quadrant == 2) * M_PI + (quadrant == 3) * circle + (-negateSin + !negateSin) * asinf((targetPixelY - firstLeave) / randomRadius);
+				for (uint8_t i = 0; i < 4; i++)
+					cast[i] &= foundLeave * firstLeaveDir * 0xFF;
+				negateCos = (quadrant == 2) || (quadrant == 3);
+				val1 = negateCos * circle + (-negateCos + !negateCos) * acosf((firstLeave - targetPixelX) / randomRadius);
+				for (uint8_t i = 0; i < 4; i++)
+					cast1[i] &= foundLeave * !firstLeaveDir * 0xFF;
+				thetaRangeEnd[thetaRangeLeaveIdx] = val + val1 + (thetaRangeEnterIdx == 0) * circle;
+
+				thetaRangeSum = 0.0f;
+
+				for (uint8_t thetaRangeIdx = 0; thetaRangeIdx < 4; thetaRangeIdx++) {
+					thetaRangeDiff = thetaRangeEnd[thetaRangeIdx] - thetaRangeStart[thetaRangeIdx];
+					thetaRangeDiff += (thetaRangeDiff < 0.0f) * circle;
+					thetaRangeSum += thetaRangeDiff;
+					thetaRangeScan[thetaRangeIdx] = thetaRangeSum;
+				}
+
+				randomThetaInRange = curand_uniform(&localState) * thetaRangeSum;
+				for (uint8_t thetaRangeIdx = 0; thetaRangeIdx < 4; thetaRangeIdx++) {
+					randomThetaInRangeDiff[thetaRangeIdx] = randomThetaInRange - thetaRangeScan[thetaRangeIdx];
+				}
+
+				randomTheta = (randomThetaInRangeDiff[0] < 0.0f) * (randomThetaInRange + thetaRangeStart[0])
+					+ (randomThetaInRangeDiff[0] > 0.0f && randomThetaInRangeDiff[1] < 0.0f) * (randomThetaInRangeDiff[0] + thetaRangeStart[1])
+					+ (randomThetaInRangeDiff[1] > 0.0f && randomThetaInRangeDiff[2] < 0.0f) * (randomThetaInRangeDiff[1] + thetaRangeStart[2])
+					+ (randomThetaInRangeDiff[2] > 0.0f && randomThetaInRangeDiff[3] < 0.0f) * (randomThetaInRangeDiff[2] + thetaRangeStart[3]);
+
+				randomTheta -= (randomTheta > circle) * circle;
+
+
+
+
+				//randomRadius = curand_uniform(&localState) * radius; // get a random distance from the uniform real distribution
+				//randomTheta = curand_uniform(&localState) * circle; // get a random angle from the uniform real distribution
+				sincosf(randomTheta, &sinVal, &cosVal);
+				randomSamplePixelX = targetPixelX + randomRadius * cosVal;	// compute random pixel abscissa
+				randomSamplePixelY = targetPixelY + randomRadius * sinVal;	// compute random pixel ordinate
+				if (randomSamplePixelX >= 0 && randomSamplePixelX < imageWidth && randomSamplePixelY >= 0 && randomSamplePixelY < imageHeight) {	// if random pixel is within image
+					randomSampleImagePixelIdx = (imageWidth * randomSamplePixelY + randomSamplePixelX) * imageChannels;	// get random sample pixel index in image
+					for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+						randomSampleImagePixelChannelIdx = randomSampleImagePixelIdx + channelIdx;	// get random sample pixel channel index
+						samplePixel[channelIdx] = inputImage[randomSampleImagePixelChannelIdx];
+						if (samplePixel[channelIdx] < Emin[channelIdx])			// if random sample pixel channel value is less than Emin at that channel
+							Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
+						else if (samplePixel[channelIdx] > Emax[channelIdx])	// if random sample pixel channel value is greater than Emax at that channel
+							Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
+					}
+					randomSamplePixelIdx++;	// advance random sample pixel index
+				}
+			}
+
+			dotProd = 0;
+			ElenSq = 0;
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				Edelta = Emax[channelIdx] - Emin[channelIdx];
+				dotProd += Edelta * (targetPixel[channelIdx] - Emin[channelIdx]);
+				ElenSq += Edelta * Edelta;
+			}
+
+			// calculate g = (p - Emin).(Emax - Emin) / |Emax - Emin|^2
+			outputPixel += dotProd * 255.0 / ElenSq;
+		}
+		outputImage[idx] = outputPixel / numOfIterations;
+		state[idx] = localState;	// store updated random number generator state back into global memory
+	}
+}
+
 // This version of the function is a hybrid between the first two approaches. It uses pre-computed sprays similarly to the first approach.
 // However, for any pixel, if any sample point in its chosen pre-computed spray is found to be lying outside the image, it is replaced with
 // randomly chosen sample points lying within the image. This should solve the issue of the first approach while not being as slow as the second approach,
@@ -1382,6 +1708,7 @@ int main(int argc, char *argv[])
 	bool computeSinLUTOnGPU;
 	unsigned int sinLUTLength;
 	bool compressSinLUT;
+	bool restrictSamplingArea;
 	bool verbose;
 
 	// thanks to http://tclap.sourceforge.net/manual.html
@@ -1402,9 +1729,11 @@ int main(int argc, char *argv[])
 		TCLAP::ValueArg<unsigned int> sinLUTLengthArg("l", "sin-lut", "Sine LUT length", false, 0, "int");
 		TCLAP::SwitchArg computeSinLUTOnGPUArg("S", "sin-lut-gpu", "Compute Sine LUT on GPU in each thread block instead of loading from global memory", false);
 		TCLAP::SwitchArg compressSinLUTArg("c", "compress-sin-lut", "Compress Sine LUT table", false);
+		TCLAP::SwitchArg restrictSamplingAreaArg("a", "restrict-sampling-area", "Restricts sampling area to obtain a valid random sample point on every try (EXPERIMENTAL)", false);
 		TCLAP::SwitchArg verboseArg("v", "verbose", "Verbose output", false);
 
 		cmd.add(verboseArg);
+		cmd.add(restrictSamplingAreaArg);
 		cmd.add(compressSinLUTArg);
 		cmd.add(computeSinLUTOnGPUArg);
 		cmd.add(sinLUTLengthArg);
@@ -1441,6 +1770,7 @@ int main(int argc, char *argv[])
 		sinLUTLength = sinLUTLengthArg.getValue();
 		computeSinLUTOnGPU = computeSinLUTOnGPUArg.getValue();
 		compressSinLUT = compressSinLUTArg.getValue();
+		restrictSamplingArea = restrictSamplingAreaArg.getValue();
 		verbose = verboseArg.getValue();
 	}
 	catch (TCLAP::ArgException &e) {
@@ -1853,6 +2183,9 @@ int main(int argc, char *argv[])
 						printf("Dynamic shared memory size (Sine LUT): %iB\n", numOfBytesDynamicSharedMemory);
 					STRESSColorToGrayscaleKernel2B << <dimGrid, dimBlock, numOfBytesDynamicSharedMemory >> > (d_CURANDStates, d_OutputImage, d_InputImage, d_SinLUT, inputImage.cols, inputImage.rows, inputImage.channels(), sinLUTLength, radius, numOfSamplePoints, numOfIterations);
 				}
+			}
+			else if (restrictSamplingArea) {
+				STRESSColorToGrayscaleKernel2E << <dimGrid, dimBlock >> > (d_CURANDStates, d_OutputImage, d_InputImage, inputImage.cols, inputImage.rows, inputImage.channels(), radius, numOfSamplePoints, numOfIterations);
 			}
 			else
 				STRESSColorToGrayscaleKernel2 << <dimGrid, dimBlock >> > (d_CURANDStates, d_OutputImage, d_InputImage, inputImage.cols, inputImage.rows, inputImage.channels(), radius, numOfSamplePoints, numOfIterations);
