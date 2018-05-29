@@ -265,7 +265,7 @@ void STRESSGrayscaleToGrayscaleCPU3(uint8_t *outputImage, uint8_t *inputImage, c
 	short int *randomSprayX;    // abscissas for spray chosen at random
 	short int *randomSprayY;    // ordinates for spray chosen at random
 
-								// allocate temporary output image array for storing sum of all iteration results
+	// allocate temporary output image array for storing sum of all iteration results
 	unsigned int imageSize = imageWidth * imageHeight;
 	float *tempOutputImage = (float*)malloc(imageSize * sizeof(float));
 
@@ -1699,6 +1699,7 @@ int main(int argc, char *argv[])
 	uint8_t outputImageMode;
 	uint8_t device;
 	unsigned short int radius;
+	bool radiusIsSet;
 	unsigned int numOfSamplePoints;
 	unsigned int numOfIterations;
 	unsigned int numOfSprays;
@@ -1719,7 +1720,7 @@ int main(int argc, char *argv[])
 		TCLAP::ValueArg<short int> inputImageModeArg("I", "input-mode", "Input image color mode (Grayscale=0, RGB=1, default=RGB)", false, 1, "int");
 		TCLAP::ValueArg<short int> outputImageModeArg("O", "output-mode", "Output image color mode (Grayscale=0, RGB=1, default=Grayscale)", false, 0, "int");
 		TCLAP::ValueArg<short int> deviceArg("d", "device", "Device selection (CPU=0, GPU=1)", "", 1, "int");
-		TCLAP::ValueArg<unsigned short int> radiusArg("r", "radius", "Radius", true, 0, "int");
+		TCLAP::ValueArg<unsigned short int> radiusArg("r", "radius", "Radius", false, 0, "int");
 		TCLAP::ValueArg<unsigned int> numOfSamplePointsArg("m", "samples", "Number of sample points", true, 0, "int");
 		TCLAP::ValueArg<unsigned int> numOfIterationsArg("n", "iterations", "Number of iterations", true, 0, "int");
 		TCLAP::ValueArg<unsigned int> numOfSpraysArg("p", "sprays", "Number of pre-computed random sprays", false, 0, "int");
@@ -1761,6 +1762,7 @@ int main(int argc, char *argv[])
 		device = deviceArg.getValue();
 		assert(device == 0 || device == 1);
 		radius = radiusArg.getValue();
+		radiusIsSet = radiusArg.isSet();
 		numOfSamplePoints = numOfSamplePointsArg.getValue();
 		numOfIterations = numOfIterationsArg.getValue();
 		numOfSprays = numOfSpraysArg.getValue();
@@ -1835,6 +1837,9 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 		inputImageSize = inputImage.cols * inputImage.rows * inputImage.channels();
+	}
+	if (!radiusIsSet || radius == 0) {
+		radius = ceil(sqrt(inputImage.cols * inputImage.cols + inputImage.rows * inputImage.rows));
 	}
 	
 	uint8_t *outputImageData;
