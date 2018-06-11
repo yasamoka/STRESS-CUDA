@@ -1691,6 +1691,87 @@ __global__ void STRESSColorToGrayscaleKernel3(curandState *state, uint8_t *outpu
 	}
 }
 
+__global__ void STRESSColorToColorKernel(curandState *state, uint8_t *outputImage, uint8_t *inputImage, const unsigned short int imageWidth, const unsigned short int imageHeight, const uint8_t imageChannels, const unsigned int radius, const unsigned int numOfSamplePoints, const unsigned int numOfIterations) {
+	unsigned int targetPixelX = blockDim.x * blockIdx.x + threadIdx.x; // target pixel abscissa
+	unsigned int targetPixelY = blockDim.y * blockIdx.y + threadIdx.y; // target pixel ordinate
+
+	if (targetPixelX < imageWidth && targetPixelY < imageHeight) {	// if target pixel is within image
+		unsigned int idx = imageWidth * targetPixelY + targetPixelX;	// thread / output pixel absolute index
+		curandState localState = state[idx];	// load random number generator state from global memory
+
+		float randomRadius;		// random radius
+		float randomTheta;		// random theta
+		const float circle = 2 * M_PI; // 2Pi
+		int randomSamplePixelX;	// random sample pixel abscissa
+		int randomSamplePixelY;	// random sample pixel ordinate
+		unsigned int randomSamplePixelIdx;	// random sample pixel index
+		unsigned int randomSampleImagePixelIdx;	// random sample pixel absolute index in image
+		unsigned int pixelChannelIdx;
+
+		float sinVal;	// sine value
+		float cosVal;	// cosine value
+
+		unsigned int targetPixelIdx = idx * imageChannels;	// target pixel (p) absolute index
+		unsigned int targetPixelChannelIdx;		// target pixel channel absolute index
+		uint8_t targetPixel[3]; // target pixel array for channels
+		uint8_t samplePixel[3];	// sample pixel array for channels
+		double outputPixel[3];		// output pixel values accumulator across iterations
+		uint8_t channelIdx;		// channel index
+
+		uint8_t Emin[3];	// Emin array of size imageChannels
+		uint8_t Emax[3];	// Emax array of size imageChannels
+
+		// initialize output pixel values accumulator to 0
+		for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+			outputPixel[channelIdx] = 0.0f;
+		}
+
+		// iteration loop
+		for (unsigned int iterationIdx = 0; iterationIdx < numOfIterations; iterationIdx++) {
+			// load target pixel and set Emin and Emax equal to target pixel value at each channel
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				targetPixelChannelIdx = targetPixelIdx + channelIdx;
+				Emin[channelIdx] = Emax[channelIdx] = targetPixel[channelIdx] = inputImage[targetPixelChannelIdx];
+			}
+
+			// generate random sample points and calculate envelope
+			randomSamplePixelIdx = 0;
+			while (randomSamplePixelIdx < numOfSamplePoints) {
+				randomRadius = curand_uniform(&localState) * radius; // get a random distance from the uniform real distribution
+				randomTheta = curand_uniform(&localState) * circle; // get a random angle from the uniform real distribution
+				sincosf(randomTheta, &sinVal, &cosVal);
+				randomSamplePixelX = targetPixelX + randomRadius * cosVal;	// compute random pixel abscissa
+				randomSamplePixelY = targetPixelY + randomRadius * sinVal;	// compute random pixel ordinate
+				if (randomSamplePixelX >= 0 && randomSamplePixelX < imageWidth && randomSamplePixelY >= 0 && randomSamplePixelY < imageHeight) {	// if random pixel is within image
+					randomSampleImagePixelIdx = (imageWidth * randomSamplePixelY + randomSamplePixelX) * imageChannels;	// get random sample pixel index in image
+					for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+						//randomSampleImagePixelChannelIdx = randomSampleImagePixelIdx + channelIdx;	// get random sample pixel channel index
+						pixelChannelIdx = randomSampleImagePixelIdx + channelIdx;	// get random sample pixel channel index
+						//samplePixel[channelIdx] = inputImage[randomSampleImagePixelChannelIdx];
+						samplePixel[channelIdx] = inputImage[pixelChannelIdx];
+						if (samplePixel[channelIdx] < Emin[channelIdx])			// if random sample pixel channel value is less than Emin at that channel
+							Emin[channelIdx] = samplePixel[channelIdx];			// it is the new Emin
+						else if (samplePixel[channelIdx] > Emax[channelIdx])	// if random sample pixel channel value is greater than Emax at that channel
+							Emax[channelIdx] = samplePixel[channelIdx];			// it is the new Emax
+					}
+					randomSamplePixelIdx++;	// advance random sample pixel index
+				}
+			}
+
+			for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+				pixelChannelIdx = targetPixelIdx + channelIdx;
+				outputPixel[channelIdx] += (inputImage[pixelChannelIdx] - Emin[channelIdx]) * 255.0 / (Emax[channelIdx] - Emin[channelIdx]);
+			}
+		}
+
+		for (channelIdx = 0; channelIdx < imageChannels; channelIdx++) {
+			pixelChannelIdx = targetPixelIdx + channelIdx;
+			outputImage[pixelChannelIdx] = outputPixel[channelIdx] / numOfIterations;
+		}
+		state[idx] = localState;	// store updated random number generator state back into global memory
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	std::string inputImageFilepath;
@@ -2193,7 +2274,16 @@ int main(int argc, char *argv[])
 				STRESSColorToGrayscaleKernel2E << <dimGrid, dimBlock >> > (d_CURANDStates, d_OutputImage, d_InputImage, inputImage.cols, inputImage.rows, inputImage.channels(), radius, numOfSamplePoints, numOfIterations);
 			}
 			else
-				STRESSColorToGrayscaleKernel2 << <dimGrid, dimBlock >> > (d_CURANDStates, d_OutputImage, d_InputImage, inputImage.cols, inputImage.rows, inputImage.channels(), radius, numOfSamplePoints, numOfIterations);
+				switch (outputImageMode) {
+					case IMAGE_MODE_GRAYSCALE:
+						STRESSColorToGrayscaleKernel2 << <dimGrid, dimBlock >> > (d_CURANDStates, d_OutputImage, d_InputImage, inputImage.cols, inputImage.rows, inputImage.channels(), radius, numOfSamplePoints, numOfIterations);
+						break;
+					case IMAGE_MODE_RGB:
+						STRESSColorToColorKernel << <dimGrid, dimBlock >> > (d_CURANDStates, d_OutputImage, d_InputImage, inputImage.cols, inputImage.rows, inputImage.channels(), radius, numOfSamplePoints, numOfIterations);
+						break;
+					default:
+						break;
+				}
 		}
 		if (verbose)
 			cudaSTRESSKernelTimer.Stop();
